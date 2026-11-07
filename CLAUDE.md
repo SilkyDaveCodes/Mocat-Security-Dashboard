@@ -114,8 +114,10 @@ homesoc/
 │   └── fake_malware/
 │       └── freegamecheats.py   # HARMLESS demo "malware" (see §9)
 ├── installer/
-│   ├── homesoc.spec            # PyInstaller
-│   └── homesoc.iss             # Inno Setup
+│   ├── homesoc.spec            # PyInstaller: HomeSOC-Agent.exe (uac_admin) + HomeSOC.exe
+│   ├── agent_entry.py          # frozen entry points (freeze_support, then agent/app main)
+│   ├── app_entry.py
+│   └── homesoc.iss             # Inno Setup → HomeSOC-Setup.exe
 └── tests/
 ```
 
@@ -479,10 +481,21 @@ py -3.12 -m venv .venv
 # emergency: remove every HomeSOC firewall rule
 Remove-NetFirewallRule -Group "HomeSOC"
 
-# package
-.venv\Scripts\pyinstaller installer\homesoc.spec
-#  then compile installer\homesoc.iss with Inno Setup → HomeSOC-Setup.exe
+# package (models trained first; see README "Building the installer")
+.venv\Scripts\pyinstaller --noconfirm installer\homesoc.spec      # → dist\HomeSOC\
+#  then compile installer\homesoc.iss with Inno Setup (ISCC.exe) → dist\HomeSOC-Setup.exe
 ```
+
+Packaging (ticket #50, `tests/test_installer.py`): the spec bundles `config.yaml`,
+`data/{allowlist,test_intel,domain_allowlist}.txt`, `models/{dga,flow}.joblib` and `app/ui/`, and
+never `lab/`, `tests/`, `models/train_*.py` or DGA generator source (§7, §9). Installed, the
+code lives read-only in `C:\Program Files\HomeSOC` and `agent.config.REPO_ROOT` (the root every
+relative path in `config.yaml` resolves against) is `%PROGRAMDATA%\HomeSOC`; `BUNDLE_ROOT` is
+`sys._MEIPASS`. `agent.main.main()` calls `config.seed_data_root()` first (copies the config and
+lists if missing, the models if missing or changed; a no-op from source, where both roots are the
+repo). The agent runs as SYSTEM, highest privileges, from the scheduled task `HomeSOC Agent`
+(at startup); the app runs as the user (Startup folder). The uninstaller's only firewall command
+is `Remove-NetFirewallRule -Group 'HomeSOC'`.
 
 Lab VM (Ubuntu, host-only network `192.168.56.0/24`, C2 at `192.168.56.20`):
 
@@ -540,7 +553,9 @@ sudo dnsmasq -C lab/dnsmasq.conf    # answers all DNS lookups inside the lab
 
 ## 12. Demo checklist
 
-1. Fresh Windows VM snapshot → run `HomeSOC-Setup.exe` → tray shield green.
+1. Fresh Windows VM snapshot (Wireshark/Npcap installed) → run `HomeSOC-Setup.exe` → tray
+   shield green. Manual check, not automated: steps in README "Manual check on a fresh VM".
+   Set `capture.interface` in `C:\ProgramData\HomeSOC\config.yaml` (not the repo copy).
 2. Apps screen shows Chrome/Discord/Spotify traffic.
 3. Run `Downloads\FreeGameCheats.exe` (with `HOMESOC_LAB=1`).
 4. DGA toast → beacon detection → app quarantined (Auto-protect) → C2 log shows check-ins stop.

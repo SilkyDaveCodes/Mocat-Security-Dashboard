@@ -54,6 +54,8 @@ UNKNOWN_PROCESS = "unknown"
 FLOW_MODEL = "flow_model"  # inbound signals are about a remote IP, not a local process
 DEFAULT_PROCINFO_CACHE_TTL_S = 30.0  # used when config.yaml lacks pipeline.procinfo_cache_ttl_s
 DEFAULT_PRUNE_INTERVAL_S = 60.0  # used when config.yaml lacks pipeline.prune_interval_s
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+LOG_FILE_NAME = "agent.log"  # in the data root, installed (frozen) agent only
 
 DetectorFn = Callable[[FlowEvent], list[Signal]]
 DetectorFactory = Callable[[dict[str, Any]], DetectorFn]
@@ -421,10 +423,22 @@ async def _track_flows(sub: Subscription, tracker: api.FlowTracker) -> None:
 
 
 def main() -> None:
-    """``python -m agent.main``: run the agent until Ctrl+C."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    """``python -m agent.main`` (or the installed ``HomeSOC-Agent.exe``): run until Ctrl+C.
+
+    Installed (frozen), the data root ``%PROGRAMDATA%\\HomeSOC`` is seeded from the bundle
+    first and the log also goes to ``agent.log`` there (the exe has no console).
+    """
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     try:
+        config.seed_data_root()  # a no-op when running from source
+        if config.FROZEN:
+            handler = logging.FileHandler(config.REPO_ROOT / LOG_FILE_NAME, encoding="utf-8")
+            handler.setFormatter(logging.Formatter(LOG_FORMAT))
+            logging.getLogger().addHandler(handler)
         cfg = config.load()
+    except OSError as exc:
+        logger.error("Could not prepare the data folder %s: %s", config.REPO_ROOT, exc)
+        raise SystemExit(1) from exc
     except config.ConfigError as exc:
         logger.error("%s", exc)
         raise SystemExit(1) from exc

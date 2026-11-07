@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -193,3 +196,90 @@ def test_test_intel_holds_only_the_lab_c2() -> None:
     lines = (REPO_ROOT / "data" / "test_intel.txt").read_text(encoding="utf-8").splitlines()
     entries = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
     assert entries == ["192.168.56.20"]
+
+
+# --- installed (frozen) layout: bundle root vs data root (ticket #50) ----------------------
+
+
+def test_running_from_source_both_roots_are_the_repo() -> None:
+    assert config.FROZEN is False
+    assert config.REPO_ROOT == REPO_ROOT
+    assert config.BUNDLE_ROOT == REPO_ROOT
+    assert config.DEFAULT_CONFIG_PATH == REPO_ROOT / "config.yaml"
+    assert config.default_config_path() == REPO_ROOT / "config.yaml"
+    assert config.seed_data_root() == []  # same root: nothing copied
+
+
+def test_frozen_roots_are_meipass_and_programdata(tmp_path: Path) -> None:
+    assert config.bundle_root_for(True, str(tmp_path)) == tmp_path
+    assert config.bundle_root_for(False, str(tmp_path)) == REPO_ROOT
+    env = {"PROGRAMDATA": str(tmp_path / "PD")}
+    assert config.data_root_for(True, env) == tmp_path / "PD" / "HomeSOC"
+    assert config.data_root_for(True, {"ALLUSERSPROFILE": "X"}) == Path("X") / "HomeSOC"
+    assert config.data_root_for(False, env) == REPO_ROOT
+
+
+def test_frozen_import_resolves_every_relative_path_under_programdata(tmp_path: Path) -> None:
+    # A real import of agent.config with sys.frozen / sys._MEIPASS set, as PyInstaller does.
+    code = (
+        "import sys; sys.frozen = True; sys._MEIPASS = sys.argv[1]\n"
+        "from agent import config\n"
+        "print(config.FROZEN, config.BUNDLE_ROOT, config.REPO_ROOT, config.DEFAULT_STORE_PATH,"
+        " config.store_path({'store': {'path': 'data/homesoc.db'}}), sep='|')\n"
+    )
+    env = dict(os.environ, PROGRAMDATA=str(tmp_path / "PD"))
+    out = subprocess.run([sys.executable, "-c", code, str(tmp_path / "bundle")], cwd=REPO_ROOT,
+                         env=env, capture_output=True, text=True, check=True).stdout.strip()
+    frozen, bundle, data, default_store, store = out.split("|")
+    data_root = tmp_path / "PD" / "HomeSOC"
+    assert frozen == "True"
+    assert Path(bundle) == tmp_path / "bundle"
+    assert Path(data) == data_root
+    assert Path(default_store) == Path(store) == data_root / "data" / "homesoc.db"
+
+
+def _bundle(tmp_path: Path) -> Path:
+    bundle = tmp_path / "bundle"
+    for rel in config.SEED_IF_MISSING + config.SEED_REFRESH:
+        (bundle / rel).parent.mkdir(parents=True, exist_ok=True)
+        (bundle / rel).write_bytes(f"bundled {rel}".encode())
+    return bundle
+
+
+def test_seed_copies_every_bundled_file_into_an_empty_data_root(tmp_path: Path) -> None:
+    bundle, data = _bundle(tmp_path), tmp_path / "data_root"
+    written = config.seed_data_root(bundle, data)
+    rels = config.SEED_IF_MISSING + config.SEED_REFRESH
+    assert sorted(written) == sorted(data / rel for rel in rels)
+    for rel in rels:
+        assert (data / rel).read_bytes() == f"bundled {rel}".encode()
+    assert (data / "data" / "cache").is_dir()
+    assert config.seed_data_root(bundle, data) == []  # second start: nothing to do
+
+
+def test_seed_keeps_user_edits_but_refreshes_changed_models(tmp_path: Path) -> None:
+    bundle, data = _bundle(tmp_path), tmp_path / "data_root"
+    config.seed_data_root(bundle, data)
+    (data / "config.yaml").write_text("edited by the user", encoding="utf-8")
+    (bundle / "config.yaml").write_text("new bundled config", encoding="utf-8")
+    (bundle / "models" / "dga.joblib").write_bytes(b"retrained model")
+    written = config.seed_data_root(bundle, data)
+    assert written == [data / "models" / "dga.joblib"]
+    assert (data / "config.yaml").read_text(encoding="utf-8") == "edited by the user"
+    assert (data / "models" / "dga.joblib").read_bytes() == b"retrained model"
+
+
+def test_seed_skips_a_file_missing_from_the_bundle(tmp_path: Path) -> None:
+    bundle, data = _bundle(tmp_path), tmp_path / "data_root"
+    (bundle / "models" / "flow.joblib").unlink()
+    written = config.seed_data_root(bundle, data)
+    assert data / "models" / "flow.joblib" not in written
+    assert not (data / "models" / "flow.joblib").exists()
+    assert (data / "models" / "dga.joblib").is_file()
+
+
+def test_default_config_falls_back_to_the_bundle_until_seeded(tmp_path: Path) -> None:
+    bundle, data = _bundle(tmp_path), tmp_path / "data_root"
+    assert config.default_config_path(data, bundle) == bundle / "config.yaml"
+    config.seed_data_root(bundle, data)
+    assert config.default_config_path(data, bundle) == data / "config.yaml"

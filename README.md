@@ -56,6 +56,69 @@ pipeline in `auto` mode and fails on any medium-or-higher alert or firewall acti
 recording lands, the only fixture is the synthetic `normal_use_synthetic.jsonl`
 (`python -m lab.synth_normal_use` regenerates it). Details: `docs/fp-test.md`.
 
+## Building the installer (HomeSOC-Setup.exe)
+
+On the Windows build VM, from the repo root, with the models already trained (§8):
+
+```powershell
+.venv\Scripts\pip install pyinstaller
+.venv\Scripts\python models\train_dga.py ...      # -> models\dga.joblib
+.venv\Scripts\python models\train_flow.py         # -> models\flow.joblib
+.venv\Scripts\pyinstaller --noconfirm installer\homesoc.spec
+#   -> dist\HomeSOC\  (HomeSOC-Agent.exe, HomeSOC.exe, _internal\)
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\homesoc.iss
+#   -> dist\HomeSOC-Setup.exe
+```
+
+- `installer/homesoc.spec` builds two executables in one folder: `HomeSOC-Agent.exe` (manifest
+  `uac_admin`, elevated) and `HomeSOC.exe` (the app, normal user). It bundles `config.yaml`,
+  `data/allowlist.txt`, `data/test_intel.txt`, `data/domain_allowlist.txt`, `models/dga.joblib`,
+  `models/flow.joblib` and `app/ui/`. It never bundles `lab/`, `tests/`, the training scripts
+  `models/train_*.py` or any DGA generator source (the baderj generators are GPL-2.0 and used
+  for training only, CLAUDE.md §7, §9). `tests/test_installer.py` checks this.
+- `installer/homesoc.iss` (Inno Setup 6) installs into `C:\Program Files\HomeSOC`, registers a
+  scheduled task `HomeSOC Agent` that runs the agent as SYSTEM with highest privileges at
+  startup (and starts it now), and adds the app to the Start menu and the all-users Startup
+  folder; the app is launched after setup as the user who ran setup, not elevated. Setup warns
+  if Npcap is missing (install Wireshark first).
+- **Where the data goes:** Program Files is read-only, so everything writable (`config.yaml`,
+  `data/homesoc.db`, `data/cache/`, `data/evidence/`, the ring pcap, `agent.log`) lives in
+  `%PROGRAMDATA%\HomeSOC` (usually `C:\ProgramData\HomeSOC`), which both the agent and the app
+  can read. On every start the agent copies the bundled `config.yaml` and data lists there if
+  they are missing (your edits are kept) and refreshes the models. **Edit
+  `C:\ProgramData\HomeSOC\config.yaml`** to set `capture.interface`, then restart the agent (admin PowerShell:
+  `Stop-ScheduledTask "HomeSOC Agent"; Start-ScheduledTask "HomeSOC Agent"`).
+  Running from source is unchanged: every path is still relative to the repo.
+- **Uninstall** deletes the scheduled task, stops both programs and runs
+  `Remove-NetFirewallRule -Group 'HomeSOC'`: only HomeSOC's own rules are removed, no other
+  firewall or Defender setting is touched. `C:\ProgramData\HomeSOC` (alerts, settings) is kept;
+  delete it by hand for a clean slate.
+
+### Defender exclusion (test VM only)
+
+PyInstaller executables are sometimes flagged by Windows Defender as false positives. **On the
+test VM only**, you may exclude the build output folder while building and testing
+(CLAUDE.md §9.4):
+
+```powershell
+# TEST VM ONLY. Never on a real PC, never for any folder but this repo's dist\.
+Add-MpPreference -ExclusionPath "$PWD\dist"
+# remove it when you are done:
+Remove-MpPreference -ExclusionPath "$PWD\dist"
+```
+
+Never disable Defender or the firewall, and never add this exclusion on a real (non-test)
+machine. Neither the installer nor HomeSOC itself ever changes Defender settings.
+
+### Manual check on a fresh VM (demo checklist step 1)
+
+1. Restore a fresh Windows VM snapshot with Wireshark (Npcap) installed.
+2. Run `HomeSOC-Setup.exe`, accept the UAC prompt, leave "Open HomeSOC" ticked, finish.
+3. Within a few seconds the tray shows the green HomeSOC shield and the window opens; the Home
+   screen shows the agent connected. `Get-ScheduledTask "HomeSOC Agent"` shows it Running.
+4. Uninstall (Settings > Apps): `Get-NetFirewallRule -Group 'HomeSOC'` then finds nothing and
+   every other firewall rule is unchanged.
+
 ## Safety
 
 HomeSOC never binds its API to anything but `127.0.0.1`, only creates firewall rules in the

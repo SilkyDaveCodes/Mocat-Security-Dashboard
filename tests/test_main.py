@@ -414,3 +414,38 @@ def test_run_agent_runs_capture_through_pipeline(
     assert [e.src_port for e in seen] == [51000, 51001, 51002]
     assert all(e.process == PROC and e.pid == PID for e in seen)
     assert caplog.text.count(f"flow {PROC} pid={PID}") == 3
+
+
+# --- main(): the installed agent seeds its data root first (ticket #50) --------------------
+
+
+def test_main_seeds_the_data_root_before_loading_the_config(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    import agent.main as agent_main
+
+    calls: list[str] = []
+    monkeypatch.setattr(config, "seed_data_root", lambda: calls.append("seed") or [])
+
+    def fake_load() -> dict:
+        calls.append("load")
+        raise config.ConfigError("stop here")
+
+    monkeypatch.setattr(config, "load", fake_load)
+    with pytest.raises(SystemExit) as excinfo:
+        agent_main.main()
+    assert excinfo.value.code == 1
+    assert calls == ["seed", "load"]
+
+
+def test_main_exits_cleanly_when_the_data_root_cannot_be_written(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    import agent.main as agent_main
+
+    def denied() -> list:
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(config, "seed_data_root", denied)
+    monkeypatch.setattr(config, "load", lambda: pytest.fail("must not load after a seed error"))
+    with pytest.raises(SystemExit) as excinfo:
+        agent_main.main()
+    assert excinfo.value.code == 1
