@@ -1,6 +1,6 @@
 ---
 name: implement-ticket
-description: Implements a ticket by delegating to a developer subagent, optionally checks it against the ticket with a read-only verifier subagent, then always runs the test-gate agent to approve the ticket's test cases and confirm nothing else broke, then writes a beginner study guide (every edit and its syntax explained, plus a Mermaid map of the changes) to docs/study-guides/. Use when the user gives a ticket/task description or issue number and wants it built and verified in one pass.
+description: Implements a ticket by delegating to a developer subagent, optionally checks it against the ticket with a read-only verifier subagent, then always runs the test-gate agent to approve the ticket's test cases and confirm nothing else broke, then has a cheaper subagent write a short beginner study guide (what each piece does, plus a Mermaid map of the changes) to docs/study-guides/, and after an approved commit and push closes the issue. Use when the user gives a ticket/task description or issue number and wants it built and verified in one pass.
 argument-hint: <ticket description, issue number, or issue URL>
 ---
 
@@ -66,15 +66,20 @@ Wait for this subagent to finish before continuing.
 
 ## Step 2 - Ask whether to run the ticket verifier
 
-Use the AskUserQuestion tool: "Run the read-only ticket verifier on this implementation?"
-with options "Yes, verify it" (recommended) and "No, skip verification". Mention that the
-test gate in Step 3 runs either way.
+If the issue has the `size:S` label, skip the verifier without asking and say so in the
+report. The test gate already re-checks the tests and runs the suite, so a second reviewer
+adds little for a small ticket.
+
+Otherwise use the AskUserQuestion tool: "Run the read-only ticket verifier on this
+implementation?" with options "Yes, verify it" (recommended) and "No, skip verification".
+Mention that the test gate in Step 3 runs either way.
 
 If the user chooses to verify: spawn `subagent_type: ticket-verifier` (read-only, defined in
 `.claude/agents/ticket-verifier.md`) in the foreground. Give it the original ticket verbatim,
-the developer's full report, and instruction to independently verify the implementation
-satisfies the ticket by reading the changed files itself and checking for bugs, missed
-requirements, or `CLAUDE.md` principle violations.
+a **short summary** of the developer's report (changed files, key design choices, the
+criterion -> test table, open questions — not the full report), and instruction to
+independently verify the implementation satisfies the ticket by reading the changed files
+itself and checking for bugs, missed requirements, or `CLAUDE.md` principle violations.
 
 ## Step 3 - Test gate (always runs)
 
@@ -83,7 +88,9 @@ Spawn `subagent_type: test-gate` (read-only, defined in `.claude/agents/test-gat
 two agents running test suites at once can fight over ports and files. Give it:
 - Mode: `ticket`.
 - The original ticket, verbatim (so it can map acceptance criteria to tests).
-- The developer's full report, including the criterion -> test table.
+- The criterion -> test table from the developer's report, plus the list of changed files.
+  Don't paste the full report.
+- The verifier's findings as one-line bullets, if it ran.
 - The baseline summary from Step 0.
 
 This step is not optional. Only skip it if the user explicitly says to skip the test gate in
@@ -91,11 +98,15 @@ their own words, and say so prominently in the report.
 
 ## Step 4 - Write the study guide
 
-Run the `ticket-study-guide` skill (`.claude/skills/ticket-study-guide/SKILL.md`) for this ticket,
-whatever the gate's verdict. Use the developer's report, the verifier's findings, and the
-gate verdict from this conversation for the *why*; the skill reads the diff itself for the
-*what*. A BLOCKed ticket still gets a guide, with the blocking items under "Open questions /
-risks".
+Write a guide whatever the gate's verdict, but do not write it in this conversation: reading
+every changed file here is the most expensive part of the run. Spawn one subagent
+(`subagent_type: general-purpose`, `model: sonnet`, `run_in_background: false`). Tell it to
+follow `.claude/skills/ticket-study-guide/SKILL.md` for this ticket (issue number and short
+title), and give it the *why* in a few bullets: the ticket's goal, the key design choices
+from the developer's report, the verifier's findings, and the gate verdict with any
+blocking items. It reads the diff itself for the *what*. A BLOCKed ticket still gets a
+guide, with the blocking items under "Open questions / risks". Only the guide's path comes
+back here.
 
 ## Step 5 - Report to the user
 
@@ -110,3 +121,17 @@ control back. Summarize concisely:
   Do not commit or push - that still needs an explicit ask. On BLOCK, list exactly what has
   to change and let the user decide whether to re-run this skill, fix it themselves, or have
   you fix it directly.
+
+## Step 6 - After the user asks to commit and push
+
+1. Commit only the ticket's files and its study guide to the working branch.
+2. `git fetch`. If the remote has new commits, rebase onto it, re-run the `## Checks`
+   commands, and push only if they still pass.
+3. Once the push succeeds and everything was green (gate APPROVE, verifier PASS if it ran),
+   close the GitHub issue without asking: `gh issue close <n> --reason completed` with a
+   one-line comment giving the commit hash, the verdicts and the test count, and saying it
+   isn't merged to `main` yet. If the issue still has a `blocked` label and its
+   prerequisites are done, remove that label.
+4. End by telling the user, in one line, to run `/clear` before the next ticket. Every new
+   message re-reads the whole conversation, so starting fresh per ticket is the biggest
+   token saving. You can't run `/clear` yourself.
