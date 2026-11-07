@@ -143,7 +143,10 @@ def test_100_flows_in_one_second_give_at_most_5_flow_messages(
         bus.publish_threadsafe(make_alert("end-1"))
         first_second = recv_until_alert(ws, "end-1")
 
-        clock.now = 1001.5  # a new second: flows flow again
+        # A new second: flows flow again. 1002.0 is > 1 s after the last possible send time
+        # (1000.891): the server reads the clock when it handles a flow, which on a slow machine
+        # can be after the loop above has already advanced it to 1000.891.
+        clock.now = 1002.0
         bus.publish_threadsafe(flow(dst_ip="10.0.0.9"))
         bus.publish_threadsafe(make_alert("end-2"))
         next_second = recv_until_alert(ws, "end-2")
