@@ -470,3 +470,204 @@ def test_run_in_a_thread_delivers_events_in_order_to_real_bus_subscribers() -> N
             assert got == expected
 
     asyncio.run(main())
+
+
+# --- psutil port -> PID fallback (#5) ---------------------------------------------------------
+
+
+def _conn(port: int, pid: int | None, sock_type: int = 1, ip: str = "192.168.56.10") -> Any:
+    """A fake psutil ``sconn`` (only the fields the resolver reads)."""
+    laddr = SimpleNamespace(ip=ip, port=port) if port else ()
+    return SimpleNamespace(type=sock_type, laddr=laddr, raddr=(), pid=pid)
+
+
+class FakeProcess:
+    names: dict[int, str] = {}
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+
+    def name(self) -> str:
+        import psutil
+
+        if self.pid not in self.names:
+            raise psutil.NoSuchProcess(self.pid)
+        return self.names[self.pid]
+
+
+@pytest.fixture
+def fake_psutil(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Patch psutil.net_connections / psutil.Process; returns knobs and a call counter."""
+    import socket
+
+    import psutil
+
+    state: dict[str, Any] = {
+        "conns": [
+            _conn(51515, 777, socket.SOCK_STREAM),          # TCP client port of updater.exe
+            _conn(3389, 888, socket.SOCK_STREAM),           # TCP server port of rdpsvc.exe
+            _conn(5353, 999, socket.SOCK_DGRAM),            # UDP port of mdns.exe
+        ],
+        "names": {777: "updater.exe", 888: "rdpsvc.exe", 999: "mdns.exe"},
+        "calls": 0,
+        "error": None,
+    }
+
+    def net_connections(kind: str = "inet") -> list[Any]:
+        assert kind == "inet"
+        state["calls"] += 1
+        if state["error"] is not None:
+            raise state["error"]
+        return list(state["conns"])
+
+    class Proc(FakeProcess):
+        names = state["names"]
+
+    monkeypatch.setattr(psutil, "net_connections", net_connections)
+    monkeypatch.setattr(psutil, "Process", Proc)
+    return state
+
+
+def _resolver(now: list[float] | None = None, ttl_s: float = 2.0) -> capture.PortPidResolver:
+    clock = (lambda: now[0]) if now is not None else (lambda: 0.0)
+    return capture.PortPidResolver(ttl_s, _fixed(), clock=clock)
+
+
+def test_fallback_gives_outbound_flow_the_owner_of_its_src_port(fake_psutil: dict) -> None:
+    flow = _flow(system_process_name="", system_process_pid=0, src_port=51515, protocol=6)
+    event = to_flow_event(flow, PC_IPS, _resolver())
+    assert (event.process, event.pid) == ("updater.exe", 777)
+
+
+def test_fallback_gives_inbound_flow_the_owner_of_its_dst_port(fake_psutil: dict) -> None:
+    flow = _flow(system_process_name="", src_ip=LAB_ATTACKER, src_port=40000,
+                 dst_ip="192.168.56.10", dst_port=3389, protocol=6)
+    event = to_flow_event(flow, PC_IPS, _resolver())
+    assert event.direction == "inbound"
+    assert (event.process, event.pid) == ("rdpsvc.exe", 888)
+
+
+def test_fallback_matches_udp_flows_only_to_udp_sockets(fake_psutil: dict) -> None:
+    udp = _flow(system_process_name="", src_port=5353, protocol=17)
+    assert to_flow_event(udp, PC_IPS, _resolver()).process == "mdns.exe"
+    # Same port number over TCP: no TCP socket owns it.
+    tcp = _flow(system_process_name="", src_port=5353, protocol=6)
+    assert to_flow_event(tcp, PC_IPS, _resolver()).process == "unknown"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"src_port": 60000, "protocol": 6},     # no connection owns the port
+        {"src_port": 51515, "protocol": 17},    # port owned only over TCP
+        {"src_port": 0, "protocol": 6},         # no port
+        {"src_port": 51515, "protocol": 1},     # ICMP: no ports at all
+    ],
+)
+def test_fallback_without_a_matching_connection_keeps_defaults(
+    fake_psutil: dict, overrides: dict[str, Any]
+) -> None:
+    flow = _flow(system_process_name="", system_process_pid=0, **overrides)
+    event = to_flow_event(flow, PC_IPS, _resolver())
+    assert (event.process, event.pid) == ("unknown", -1)
+
+
+def test_fallback_skips_connections_without_pid_or_local_address(fake_psutil: dict) -> None:
+    fake_psutil["conns"] = [_conn(51515, None), _conn(0, 777), _conn(51515, 0)]
+    event = to_flow_event(_flow(system_process_name="", src_port=51515), PC_IPS, _resolver())
+    assert (event.process, event.pid) == ("unknown", -1)
+
+
+def test_fallback_keeps_pid_when_process_name_cannot_be_read(fake_psutil: dict) -> None:
+    fake_psutil["conns"] = [_conn(51515, 4321)]  # PID with no readable name (process gone)
+    event = to_flow_event(_flow(system_process_name="", src_port=51515), PC_IPS, _resolver())
+    assert (event.process, event.pid) == ("unknown", 4321)
+
+
+def test_fallback_caches_snapshot_within_ttl_and_refreshes_after(fake_psutil: dict) -> None:
+    now = [100.0]
+    resolver = _resolver(now, ttl_s=2.0)
+    flow = _flow(system_process_name="", src_port=51515)
+    for _ in range(50):  # a burst of flows
+        assert to_flow_event(flow, PC_IPS, resolver).pid == 777
+    assert fake_psutil["calls"] == 1
+
+    # The port changes owner; within the TTL the cached snapshot is still used.
+    fake_psutil["conns"] = [_conn(51515, 999)]
+    now[0] = 101.9
+    assert to_flow_event(flow, PC_IPS, resolver).pid == 777
+    assert fake_psutil["calls"] == 1
+
+    now[0] = 102.0  # TTL elapsed: refresh
+    event = to_flow_event(flow, PC_IPS, resolver)
+    assert (event.process, event.pid) == ("mdns.exe", 999)
+    assert fake_psutil["calls"] == 2
+
+
+def test_fallback_logs_access_denied_and_capture_continues(
+    fake_psutil: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    import psutil
+
+    now = [0.0]
+    fake_psutil["error"] = psutil.AccessDenied()
+    resolver = _resolver(now)
+    flows = [_flow(system_process_name="", src_port=51515, dst_port=i) for i in range(3)]
+    bus = RecordingBus()
+    with caplog.at_level(logging.WARNING, logger="agent.capture"):
+        count = capture.run(
+            bus, {}, streamer_factory=lambda cfg: flows,  # type: ignore[arg-type]
+            process_fallback=resolver, local_addresses=_fixed(),
+        )
+    assert count == 3
+    assert [(e.process, e.pid, e.dst_port) for e in bus.events] == [
+        ("unknown", -1, 0), ("unknown", -1, 1), ("unknown", -1, 2)
+    ]
+    assert "net_connections failed" in caplog.text
+    assert fake_psutil["calls"] == 1  # the failure is cached too: no psutil call per flow
+
+    # psutil recovers: after the TTL the resolver works again.
+    fake_psutil["error"] = None
+    now[0] = 5.0
+    assert to_flow_event(flows[0], PC_IPS, resolver).pid == 777
+
+
+def test_fallback_survives_process_name_access_denied(
+    fake_psutil: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import psutil
+
+    class DeniedProcess:
+        def __init__(self, pid: int) -> None:
+            raise psutil.AccessDenied(pid)
+
+    monkeypatch.setattr(psutil, "Process", DeniedProcess)
+    event = to_flow_event(_flow(system_process_name="", src_port=51515), PC_IPS, _resolver())
+    assert (event.process, event.pid) == ("unknown", 777)
+
+
+def test_run_uses_psutil_fallback_by_default_with_ttl_from_config(
+    fake_psutil: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built: list[float] = []
+    real_init = capture.PortPidResolver.__init__
+
+    def spy_init(self: Any, ttl_s: float, *args: Any, **kwargs: Any) -> None:
+        built.append(ttl_s)
+        real_init(self, ttl_s, *args, **kwargs)
+
+    monkeypatch.setattr(capture.PortPidResolver, "__init__", spy_init)
+    bus = RecordingBus()
+    cfg = {"capture": {"local_ips_refresh_s": 60, "port_pid_cache_ttl_s": 7}}
+    capture.run(bus, cfg, streamer_factory=lambda c: [_flow(system_process_name="")],  # type: ignore[arg-type]
+                local_addresses=_fixed())
+    assert (bus.events[0].process, bus.events[0].pid) == ("updater.exe", 777)
+    assert built == [7]
+
+    capture.run(RecordingBus(), {}, streamer_factory=lambda c: [],  # type: ignore[arg-type]
+                local_addresses=_fixed())
+    assert built == [7, capture.DEFAULT_PORT_PID_CACHE_TTL_S]
+
+
+def test_config_sets_port_pid_cache_ttl() -> None:
+    assert config.load()["capture"]["port_pid_cache_ttl_s"] == 2

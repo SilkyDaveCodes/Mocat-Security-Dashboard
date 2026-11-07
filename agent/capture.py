@@ -39,6 +39,11 @@ UNKNOWN_PROCESS = "unknown"
 UNKNOWN_PID = -1
 NFSTREAM_UNKNOWN_PIDS: frozenset[int] = frozenset({0, -1})  # NFStream's "no PID" values
 
+DEFAULT_PORT_PID_CACHE_TTL_S = 2.0  # used when config.yaml lacks capture.port_pid_cache_ttl_s
+
+# IP protocol number -> socket type, for matching a flow to a psutil connection.
+_SOCK_TYPE_BY_PROTOCOL: dict[int, int] = {6: socket.SOCK_STREAM, 17: socket.SOCK_DGRAM}
+
 # §6.1 NFStreamer settings that are fixed by the spec (interface and timeouts come from config).
 # n_dissections is deliberately NOT passed: its default (20) is what fills requested_server_name.
 STATISTICAL_ANALYSIS = True
@@ -140,10 +145,10 @@ def direction_of(src_ip: str, local_ips: Iterable[IPAddress]) -> Literal["outbou
 
 
 def default_process_fallback(flow: Any) -> tuple[str, int] | None:
-    """No fallback yet: the flow keeps the FlowEvent defaults (``"unknown"``, ``-1``).
+    """The pure mapping's default: no lookup, the flow keeps ``"unknown"``/``-1``.
 
-    TODO(#5): map the flow's local port to a PID with ``psutil.net_connections(kind="inet")``
-    and return ``(process_name, pid)``. Pass the result as ``process_fallback``.
+    Live capture (:func:`run`) passes a :class:`PortPidResolver` instead, which maps the flow's
+    local port to a PID with ``psutil.net_connections``.
     """
     return None
 
@@ -254,6 +259,98 @@ class LocalAddresses:
         return self._ips
 
 
+class PortPidResolver:
+    """Process fallback: find who owns a flow's local port with ``psutil.net_connections`` (§6.1).
+
+    Used for flows whose ``system_process_name`` is empty. The local port is the port on this
+    PC's side: ``src_port`` for outbound flows, ``dst_port`` for inbound ones. The lookup is keyed
+    by ``(socket type, port)`` so a TCP flow only matches a TCP socket and UDP only UDP; other
+    protocols (ICMP, ...) have no ports and never match.
+
+    One ``net_connections`` snapshot (port -> PID, plus PID -> name) is cached for ``ttl_s``
+    seconds, so a burst of flows costs one psutil call. After the TTL the next lookup refreshes it.
+
+    Never raises: a psutil error (e.g. ``AccessDenied`` on macOS) is logged and the flow keeps
+    the defaults. If the PID is found but its name can't be read (process gone / access
+    denied), the PID is kept and the process stays ``"unknown"``.
+    """
+
+    def __init__(
+        self,
+        ttl_s: float,
+        local_addresses: LocalAddresses,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ttl_s = ttl_s
+        self._local_addresses = local_addresses
+        self._clock = clock
+        self._ports: dict[tuple[int, int], int] = {}
+        self._names: dict[int, str | None] = {}
+        self._read_at: float | None = None
+        self._failing = False
+
+    def __call__(self, flow: Any) -> tuple[str, int] | None:
+        key = self._socket_key(flow)
+        if key is None:
+            return None
+        pid = self._snapshot().get(key)
+        if pid is None:
+            return None
+        return (self._name_of(pid) or UNKNOWN_PROCESS, pid)
+
+    def _socket_key(self, flow: Any) -> tuple[int, int] | None:
+        sock_type = _SOCK_TYPE_BY_PROTOCOL.get(_int(getattr(flow, "protocol", 0)))
+        if sock_type is None:
+            return None
+        src_ip = str(getattr(flow, "src_ip", "") or "")
+        outbound = direction_of(src_ip, self._local_addresses.get()) == "outbound"
+        port = _int(getattr(flow, "src_port" if outbound else "dst_port", 0))
+        return (sock_type, port) if port > 0 else None
+
+    def _snapshot(self) -> dict[tuple[int, int], int]:
+        now = self._clock()
+        if self._read_at is None or now - self._read_at >= self._ttl_s:
+            self._ports = self._read_ports()
+            self._names = {}
+            self._read_at = now  # also after an error: retry only once the TTL has passed
+        return self._ports
+
+    def _read_ports(self) -> dict[tuple[int, int], int]:
+        import psutil  # lazy: only live capture needs it
+
+        try:
+            conns = psutil.net_connections(kind="inet")
+        except Exception as exc:  # AccessDenied (macOS without root), OSError, ...
+            log = logger.debug if self._failing else logger.warning
+            log("psutil.net_connections failed (%s); process fallback has no data", exc)
+            self._failing = True
+            return {}
+        self._failing = False
+        ports: dict[tuple[int, int], int] = {}
+        for conn in conns:
+            port = getattr(conn.laddr, "port", None) if conn.laddr else None
+            if conn.pid is None or conn.pid in NFSTREAM_UNKNOWN_PIDS or not port:
+                continue
+            ports.setdefault((int(conn.type), int(port)), int(conn.pid))
+        return ports
+
+    def _name_of(self, pid: int) -> str | None:
+        if pid not in self._names:
+            self._names[pid] = _process_name(pid)
+        return self._names[pid]
+
+
+def _process_name(pid: int) -> str | None:
+    """``psutil.Process(pid).name()``, or ``None`` (logged) if it can't be read."""
+    import psutil  # lazy: only live capture needs it
+
+    try:
+        return _str_or_none(psutil.Process(pid).name())
+    except Exception as exc:  # NoSuchProcess, AccessDenied, ...
+        logger.debug("Could not read the name of PID %d: %s", pid, exc)
+        return None
+
+
 def run(
     bus: Bus,
     cfg: dict[str, Any],
@@ -267,13 +364,19 @@ def run(
     Stops when the streamer ends or ``stop_event`` is set. The stop is checked between flows,
     so it takes effect when the next flow arrives (NFStream blocks while waiting for one).
     A flow that fails to map is logged and skipped. ``local_addresses`` defaults to this PC's
-    own addresses, refreshed every ``capture.local_ips_refresh_s`` seconds.
+    own addresses, refreshed every ``capture.local_ips_refresh_s`` seconds. ``process_fallback``
+    defaults to a :class:`PortPidResolver` whose cache lives ``capture.port_pid_cache_ttl_s``
+    seconds (:data:`DEFAULT_PORT_PID_CACHE_TTL_S` if the key is missing).
 
     Returns:
         The number of events published.
     """
+    capture_cfg = cfg.get("capture", {})
     if local_addresses is None:
-        local_addresses = LocalAddresses(cfg["capture"]["local_ips_refresh_s"])
+        local_addresses = LocalAddresses(capture_cfg["local_ips_refresh_s"])
+    if process_fallback is None:
+        ttl_s = capture_cfg.get("port_pid_cache_ttl_s", DEFAULT_PORT_PID_CACHE_TTL_S)
+        process_fallback = PortPidResolver(ttl_s, local_addresses)
     published = 0
     for flow in streamer_factory(cfg):
         if stop_event is not None and stop_event.is_set():

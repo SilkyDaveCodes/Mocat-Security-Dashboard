@@ -10,6 +10,7 @@ capture:
   idle_timeout: 10        # NFStream idle_timeout (s)
   active_timeout: 30      # NFStream active_timeout (s)
   local_ips_refresh_s: 60 # re-read this PC's own IPs (inbound vs outbound) this often
+  port_pid_cache_ttl_s: 2 # reuse one psutil port->PID snapshot this long (flows with no process name)
 
 calibration:
   minutes: 10             # anomaly calibration period (10 min for the demo, §6.3)
