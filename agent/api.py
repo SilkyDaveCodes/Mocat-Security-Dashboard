@@ -13,8 +13,8 @@ Routes
     ``POST /undo-all``                  remove every rule in group HomeSOC, mark all undone
     ``POST /mode``                      ``{"mode": "off" | "notify" | "auto"}`` (else 422)
     ``POST /alerts/{id}/quarantine``    the user asks to quarantine the alert's app
+    ``GET  /alerts/{id}/evidence``      write ``data/evidence/<id>.pcap`` from the ring capture
     ``WS   /ws``                        pushes every Alert and Action, plus throttled flow summaries
-    (``GET /alerts/{id}/evidence`` is a separate ticket.)
 
 CORS
     The app's window (pywebview, ``http://127.0.0.1:<port>/``) is another origin, so responses
@@ -25,6 +25,10 @@ Error codes
     already undone or not undoable, alert without a known exe path, app on the allowlist, app
     already quarantined). 400 the stored exe path is unsafe for PowerShell. 502 the firewall
     (PowerShell) call failed; nothing is marked as done. 422 a body that fails validation.
+    Evidence (``GET /alerts/{id}/evidence``, agent/evidence.py): 400 an alert id that is not
+    ``[A-Za-z0-9_-]{1,64}`` (checked before the store is read), 404 unknown id, 409 no signal
+    of the alert targets an IP, 502 tshark / mergecap failed or timed out, 503 no exporter, no
+    ring files yet, or tshark / mergecap not installed. Nothing runs for a 400 / 404 / 409.
 
 Design
     * :func:`create_app` gets every dependency injected (store, the object whose ``mode`` the
@@ -69,6 +73,7 @@ from pydantic import BaseModel
 
 from agent import alerts_text
 from agent import config as config_module
+from agent import evidence as evidence_module
 from agent.bus import Bus, Subscription, SubscriptionClosed
 from agent.config import Allowlist
 from agent.events import Action, Alert, FlowEvent, to_json
@@ -376,6 +381,7 @@ def create_app(
     clock: Callable[[], float] = time.monotonic,
     bus: Bus | None = None,
     ws_flow_rate_per_s: int = DEFAULT_WS_FLOW_RATE_PER_S,
+    evidence: evidence_module.EvidenceExporter | None = None,
 ) -> FastAPI:
     """Build the API.
 
@@ -393,6 +399,8 @@ def create_app(
             it, /ws closes every connection with code 1011.
         ws_flow_rate_per_s: Max flow summaries per second per /ws client
             (``api.ws_flow_rate_limit_per_s``, see :func:`ws_flow_rate_from_config`).
+        evidence: Writes the per-alert pcap for ``GET /alerts/{id}/evidence``. Without it that
+            route answers 503.
     """
     fw = dict(firewall_fns) if firewall_fns is not None else default_firewall()
     trusted = allowlist if allowlist is not None else config_module.load_allowlist()
@@ -517,6 +525,32 @@ def create_app(
         store.save_alert(updated)
         emit(updated)
         return {"alert": to_json(updated), "action": to_json(action)}
+
+    @app.get("/alerts/{alert_id}/evidence")
+    def export_evidence(alert_id: str) -> dict[str, Any]:
+        try:  # before the id goes anywhere near a file name or a command
+            evidence_module.validate_alert_id(alert_id)
+        except evidence_module.UnsafeAlertIdError as exc:
+            raise HTTPException(400, "Unsafe alert id") from exc
+        alert = store.get_alert(alert_id)
+        if alert is None:
+            raise HTTPException(404, f"No alert with id {alert_id!r}")
+        try:
+            evidence_module.alert_target_ip(alert)
+        except evidence_module.NoTargetIpError as exc:
+            raise HTTPException(409, f"Alert {alert_id} is not about an IP address, so there "
+                                     "are no packets to export") from exc
+        if evidence is None:
+            raise HTTPException(503, "Evidence export is not available")
+        try:
+            result = evidence.export(alert)
+        except evidence_module.UnsafeAlertIdError as exc:
+            raise HTTPException(400, "Unsafe alert id") from exc
+        except evidence_module.EvidenceUnavailable as exc:
+            raise HTTPException(503, f"Evidence export is not available: {exc}") from exc
+        except evidence_module.EvidenceError as exc:
+            raise HTTPException(502, f"Evidence export failed: {exc}") from exc
+        return result.as_dict()
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:

@@ -92,6 +92,19 @@ api:
   ws_flow_rate_limit_per_s: 5  # throttled FlowEvent summaries on /ws
   apps_window_s: 600           # GET /apps counts flows seen in the last 10 minutes
 
+evidence:                      # rolling capture + per-alert pcap export (§6.8, agent/evidence.py)
+  # Wireshark tools. A bare name must be on PATH; the Wireshark installer doesn't add it, so
+  # these point at its default folder. ring_path / evidence_dir are relative to the repo root.
+  dumpcap: "C:\\Program Files\\Wireshark\\dumpcap.exe"
+  tshark: "C:\\Program Files\\Wireshark\\tshark.exe"
+  mergecap: "C:\\Program Files\\Wireshark\\mergecap.exe"   # merges the filtered ring files
+  ring_path: data/ring.pcapng  # dumpcap -w (it writes ring_<NNNNN>_<date>.pcapng next to it)
+  ring_filesize_kb: 20000      # dumpcap -b filesize: (kB per ring file)
+  ring_files: 5                # dumpcap -b files: (ring files kept)
+  evidence_dir: data/evidence  # GET /alerts/{id}/evidence writes <alert_id>.pcap here
+  export_timeout_s: 60         # give up on one tshark / mergecap run after this long
+  stop_timeout_s: 5            # on shutdown: terminate dumpcap, wait this long, then kill
+
 app:
   tray_refresh_s: 5            # the tray re-reads GET /alerts, /actions, /status this often
   http_timeout_s: 5            # give up on one app -> agent HTTP call after this long

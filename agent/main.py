@@ -36,7 +36,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from agent import api, capture, config, procinfo
+from agent import api, capture, config, evidence, procinfo
 from agent.bus import Bus, Subscription
 from agent.detectors.beacon import BeaconDetector
 from agent.detectors.dga import DgaDetector
@@ -61,6 +61,7 @@ ProcLookup = Callable[[int], ProcInfo | None]
 FirewallFn = Callable[[str], Action]
 Publish = Callable[[Any], None]
 ApiStarter = Callable[[Any, dict[str, Any]], Any]  # (FastAPI app, cfg) -> object with .stop()
+RingStarter = Callable[[dict[str, Any]], Any]  # cfg -> started ring capture with .stop()
 
 
 @dataclass(frozen=True)
@@ -324,6 +325,7 @@ async def run_agent(
     store: Store | None = None,
     api_starter: ApiStarter | None = None,
     tracker: api.FlowTracker | None = None,
+    ring_starter: RingStarter | None = None,
 ) -> None:
     """Start capture and the pipeline; return when capture ends (or on cancel / Ctrl+C).
 
@@ -331,6 +333,10 @@ async def run_agent(
     on 127.0.0.1; without it no server is started (tests). Its ``POST /mode`` changes the
     pipeline's scorer mode, ``GET /apps`` reads ``tracker``, fed from its own bus
     subscription, and every ``WS /ws`` client gets its own subscription to ``bus``.
+
+    ``ring_starter`` (``main()`` passes :func:`agent.evidence.start_ring_capture`) starts the
+    rolling dumpcap capture (§6.8); it is stopped on shutdown. Without it (tests) none runs.
+    A dumpcap that can't start is logged and the agent carries on.
     """
     loop = asyncio.get_running_loop()
     bus = Bus.from_config(cfg, loop=loop)
@@ -343,11 +349,18 @@ async def run_agent(
     worker = asyncio.create_task(pipeline.run(sub))
     apps_worker = asyncio.create_task(_track_flows(apps_sub, flows))
     server = None
+    ring = None
     if api_starter is not None:
         app = api.create_app(db, pipeline.scorer, flows, allowlist=api.allowlist_from_config(cfg),
                              publish=bus.publish_threadsafe, bus=bus,
-                             ws_flow_rate_per_s=api.ws_flow_rate_from_config(cfg))
+                             ws_flow_rate_per_s=api.ws_flow_rate_from_config(cfg),
+                             evidence=evidence.EvidenceExporter.from_config(cfg))
         server = api_starter(app, cfg)
+    if ring_starter is not None:
+        try:
+            ring = ring_starter(cfg)
+        except Exception:  # evidence capture is optional; never stop the agent for it
+            logger.exception("Rolling capture could not start; running without it")
     capture_done: asyncio.Future[int] = loop.create_future()
 
     def _capture() -> None:
@@ -391,6 +404,11 @@ async def run_agent(
         finally:
             if server is not None:
                 server.stop()
+            if ring is not None:
+                try:
+                    ring.stop()
+                except Exception:
+                    logger.exception("Could not stop the rolling capture")
             if own_store:
                 db.close()
 
@@ -412,7 +430,8 @@ def main() -> None:
         raise SystemExit(1) from exc
     stop_event = threading.Event()
     try:
-        asyncio.run(run_agent(cfg, stop_event, api_starter=api.start_in_thread))
+        asyncio.run(run_agent(cfg, stop_event, api_starter=api.start_in_thread,
+                              ring_starter=evidence.start_ring_capture))
     except KeyboardInterrupt:
         logger.info("Stopping HomeSOC agent")
     except capture.CaptureError as exc:

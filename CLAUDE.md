@@ -27,7 +27,7 @@ Everything runs locally on the PC. The only outbound request HomeSOC makes is a 
 
 | Owner | Role | Owns |
 |---|---|---|
-| **CE** | Computer Engineering | `agent/capture.py`, `agent/procinfo.py`, `agent/bus.py`, `agent/api.py`, `agent/store.py`, `agent/response/`, `agent/detectors/flow_model.py`, `app/`, `installer/` |
+| **CE** | Computer Engineering | `agent/capture.py`, `agent/procinfo.py`, `agent/bus.py`, `agent/api.py`, `agent/store.py`, `agent/evidence.py`, `agent/response/`, `agent/detectors/flow_model.py`, `app/`, `installer/` |
 | **CS** | Cybersecurity | `agent/detectors/intel.py`, `dga.py`, `beacon.py`, `anomaly.py`, `agent/scoring.py`, `agent/alerts_text.py`, `models/train_dga.py`, `lab/` |
 | Both | — | `agent/events.py` (the event schema), `config.yaml`, `tests/` |
 
@@ -82,6 +82,7 @@ homesoc/
 │   ├── store.py                # SQLite
 │   ├── scoring.py              # risk combination + response policy
 │   ├── alerts_text.py          # plain-English templates + MITRE IDs
+│   ├── evidence.py             # dumpcap ring buffer + per-alert tshark pcap export (§6.8)
 │   ├── detectors/
 │   │   ├── intel.py
 │   │   ├── dga.py
@@ -405,6 +406,29 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
 ### 6.8 Evidence export (CE)
 - The agent runs a rolling capture: `dumpcap -i <iface> -b filesize:20000 -b files:5 -w data/ring.pcapng`.
 - Evidence = `tshark -r data/ring.pcapng -Y "ip.addr==<ip>" -w data/evidence/<alert_id>.pcap`.
+- Implementation notes (`agent/evidence.py`; config section `evidence`: `dumpcap`, `tshark`,
+  `mergecap` (default: the Wireshark install folder), `ring_path`, `ring_filesize_kb`,
+  `ring_files`, `evidence_dir`, `export_timeout_s`, `stop_timeout_s`; paths relative to the repo
+  root, like `store.path`):
+  - Every command is an argument list, never a shell (the filter is the one argument
+    `ip.addr==<ip>`; an IPv6 target uses `ipv6.addr==<ip>`). Launchers are injected
+    (`RingCapture(settings, popen=)`, `EvidenceExporter(settings, run=)`), so tests need no Wireshark.
+  - `RingCapture` is started by `run_agent(..., ring_starter=)` (`main()` passes
+    `evidence.start_ring_capture`; tests pass none) and stopped on shutdown: terminate, wait
+    `stop_timeout_s`, then kill. A missing dumpcap is a warning; the agent runs on without it.
+  - dumpcap's `-b` ring writes `ring_<NNNNN>_<YYYYMMDDhhmmss>.pcapng`, not `ring.pcapng`.
+    `ring_files()` lists them oldest first (by number; a literal `ring.pcapng` first if present).
+    One file → the exact tshark command above. Several → tshark filters each into a temp part in
+    the evidence dir, then `mergecap -w data/evidence/<alert_id>.pcap <parts…>` merges them.
+    Output is pcapng under the `.pcap` name (tshark's default); Wireshark opens it. One export
+    at a time (lock).
+  - Target IP = the first signal (in order) whose `target` parses with `ipaddress` (no IPv6
+    scope id), canonicalised; domain targets are skipped.
+  - `GET /alerts/{id}/evidence` → `{"alert_id", "ip", "path", "bytes", "ring_files"}` (the app
+    shows `path`). Errors: 400 id not `^[A-Za-z0-9_-]{1,64}$` (checked before the store is read;
+    the output path must also resolve inside `evidence_dir`), 404 unknown id, 409 no signal
+    targets an IP, 503 no exporter / no ring files yet / tshark or mergecap missing, 502 tshark or
+    mergecap failed or timed out. Nothing runs for a 400/404/409.
 
 ---
 
