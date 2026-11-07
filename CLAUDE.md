@@ -276,18 +276,31 @@ Each detector exposes `def process(event: FlowEvent) -> list[Signal]`.
 Run PowerShell with `subprocess.run(["powershell", "-NoProfile", "-Command", cmd], check=False,
 capture_output=True)`. Rule names start with `HomeSOC` and every rule is in group `HomeSOC`.
 
+Every literal (rule name, group, IP, exe path) is a PowerShell **single-quoted** string built with
+`agent.procinfo.ps_quote` (`'` doubled; `$`, backticks, `"`, `;` stay literal). `<tag>` is `#` + the
+first 8 hex chars of the new Action's id, so every action's rule names are unique (two `update.exe`
+in different folders, or the same IP blocked twice, never share names). One PowerShell call per rule.
+
 ```powershell
-# block_ip(ip)
-New-NetFirewallRule -DisplayName "HomeSOC block <ip> out" -Group "HomeSOC" -Direction Outbound -RemoteAddress <ip> -Action Block
-New-NetFirewallRule -DisplayName "HomeSOC block <ip> in"  -Group "HomeSOC" -Direction Inbound  -RemoteAddress <ip> -Action Block
+# block_ip(ip)          ip is validated + canonicalised with ipaddress (loopback/unspecified refused)
+New-NetFirewallRule -DisplayName 'HomeSOC block <ip> out <tag>' -Group 'HomeSOC' -Direction Outbound -RemoteAddress '<ip>' -Action Block -ErrorAction Stop | Out-Null
+New-NetFirewallRule -DisplayName 'HomeSOC block <ip> in <tag>'  -Group 'HomeSOC' -Direction Inbound  -RemoteAddress '<ip>' -Action Block -ErrorAction Stop | Out-Null
 
-# quarantine_app(exe_path)
-New-NetFirewallRule -DisplayName "HomeSOC quarantine <exe> out" -Group "HomeSOC" -Direction Outbound -Program "<exe_path>" -Action Block
-New-NetFirewallRule -DisplayName "HomeSOC quarantine <exe> in"  -Group "HomeSOC" -Direction Inbound  -Program "<exe_path>" -Action Block
+# quarantine_app(exe_path)    exe_path must be an absolute Windows path, no NUL/CR/LF
+New-NetFirewallRule -DisplayName 'HomeSOC quarantine <exe> out <tag>' -Group 'HomeSOC' -Direction Outbound -Program '<exe_path>' -Action Block -ErrorAction Stop | Out-Null
+New-NetFirewallRule -DisplayName 'HomeSOC quarantine <exe> in <tag>'  -Group 'HomeSOC' -Direction Inbound  -Program '<exe_path>' -Action Block -ErrorAction Stop | Out-Null
 
-# undo(action)       → Remove-NetFirewallRule -DisplayName "<each rule name>"
-# undo_all()         → Remove-NetFirewallRule -Group "HomeSOC"
+# undo(action)  one call per stored rule name. Exact match (-ceq, no wildcards: -DisplayName would
+# treat [ ] * ? as a pattern), only inside group HomeSOC. An empty group (ObjectNotFound) = nothing
+# to remove = exit 0; any other error = exit 1. Remove-NetFirewallRule never runs on empty input.
+try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { exit 0 }; [Console]::Error.WriteLine($_); exit 1 }; $match = @($rules | Where-Object { $_.DisplayName -ceq '<rule name>' }); if ($match.Count -gt 0) { try { Remove-NetFirewallRule -InputObject $match -ErrorAction Stop } catch { [Console]::Error.WriteLine($_); exit 1 } }
+
+# undo_all()    same error handling, every rule in group HomeSOC
+try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { exit 0 }; [Console]::Error.WriteLine($_); exit 1 }; $match = $rules; if ($match.Count -gt 0) { try { Remove-NetFirewallRule -InputObject $match -ErrorAction Stop } catch { [Console]::Error.WriteLine($_); exit 1 } }
 ```
+- Any non-zero exit / timeout / missing PowerShell is logged and raised as `FirewallError`, never
+  treated as success. A failed second rule rolls back the first. A failed undo leaves
+  `action.undone = False`.
 - Escape/quote paths safely and never pass unchecked user text into PowerShell.
 - Return an `Action` and save it in the store. Undo must work after an agent restart (rule names
   are stored).
