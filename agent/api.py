@@ -8,6 +8,7 @@ Routes
     ``GET  /status``                    mode, uptime, alert / active-action / app counts
     ``GET  /apps``                      per-process bytes + destinations, last ``api.apps_window_s``
     ``GET  /alerts?limit=N``            stored alerts, newest first
+    ``GET  /actions?limit=N&undone=B``  stored actions (undo records included), newest first
     ``POST /actions/{id}/undo``         remove that action's firewall rules, mark it undone
     ``POST /undo-all``                  remove every rule in group HomeSOC, mark all undone
     ``POST /mode``                      ``{"mode": "off" | "notify" | "auto"}`` (else 422)
@@ -86,6 +87,8 @@ WS_FLOW_WINDOW_S = 1.0  # the throttle counts flow messages per this many second
 WS_CLOSE_UNAVAILABLE = 1011  # no bus to read from (server error)
 WS_CLOSE_GOING_AWAY = 1001  # the agent is shutting down
 MAX_ALERTS_LIMIT = 1000
+DEFAULT_ACTIONS_LIMIT = 1000
+MAX_ACTIONS_LIMIT = 10000
 UNKNOWN_PROCESS = "unknown"
 UNDO_KIND = "undo"
 # The app's pywebview window serves its UI from http://127.0.0.1:<random port>/, a different
@@ -432,6 +435,14 @@ def create_app(
         limit: int = Query(DEFAULT_ALERTS_LIMIT, ge=1, le=MAX_ALERTS_LIMIT),
     ) -> dict[str, Any]:
         return {"alerts": [to_json(a) for a in store.list_alerts(limit)]}
+
+    @app.get("/actions")
+    def actions(
+        limit: int = Query(DEFAULT_ACTIONS_LIMIT, ge=1, le=MAX_ACTIONS_LIMIT),
+        undone: bool | None = None,
+    ) -> dict[str, Any]:
+        # The tray (app/tray.py) reads this to tell which alerts were undone (no longer active).
+        return {"actions": [to_json(a) for a in store.list_actions(limit, undone=undone)]}
 
     @app.post("/mode")
     def set_mode(body: ModeBody) -> dict[str, Any]:

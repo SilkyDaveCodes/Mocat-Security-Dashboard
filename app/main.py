@@ -12,9 +12,9 @@ pywebview serves the local UI from its own HTTP server on ``http://127.0.0.1:<po
 (``http_server=True``), so ``fetch`` calls to the API are cross-origin; the agent's API allows
 loopback origins only (``agent/api.py``, CORS).
 
-The tray icon and toast notifications are a separate ticket: :func:`run` takes an optional
-``on_started`` callback (run by pywebview once the GUI loop is up, with the window as argument)
-as the hook for them.
+:func:`run` takes an optional ``on_started`` callback (run by pywebview once the GUI loop is up,
+with the window as argument); :func:`main` passes :func:`app.tray.start_tray` there, which shows
+the tray shield (``app/tray.py``). Toast notifications are a separate ticket.
 
 Run: ``python -m app.main`` (normal, non-admin terminal).
 """
@@ -109,7 +109,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger.info("Opening the HomeSOC window (agent API at %s)", API_BASE_URL)
-    run()
+    from app.tray import start_tray  # here, not at the top: app.tray imports this module
+
+    run(on_started=start_tray)
 
 
 if __name__ == "__main__":

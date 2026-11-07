@@ -340,6 +340,7 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
 
 ### 6.6 `agent/api.py` (CE)
 - `GET /status`, `GET /apps` (per-process bytes and destinations, last 10 min), `GET /alerts`,
+  `GET /actions?limit=N&undone=B` (stored actions, newest first; the tray reads it),
   `POST /actions/{id}/undo`, `POST /undo-all`, `POST /mode` (`off|notify|auto`),
   `POST /alerts/{id}/quarantine`, `GET /alerts/{id}/evidence` (writes a pcap; see §6.8).
 - `WS /ws`: pushes every Alert, Action, and a throttled FlowEvent summary (≤ 5 per second).
@@ -379,6 +380,13 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
   `run(on_started=)` is the hook for the tray/toasts. `index.html` sets a CSP that only allows
   `self` and the agent; no external resources. JS tests: `tests/js/test_app.mjs` (run by
   `tests/test_app_ui.py` through `node`; skipped if `node` is missing).
+- Tray (`app/tray.py`, started by `app.main.main()` through `run(on_started=start_tray)`):
+  pure `tray_state(alerts, actions)` → red if any *active* high/critical alert, yellow if any
+  active alert, else green. An alert is **active** unless it has ≥ 1 `action_id` and every one
+  of those actions is known and `undone` (alerts with no action stay active; an unknown action id
+  counts as in force). Polls `GET /alerts`, `GET /actions`, `GET /status` every
+  `app.tray_refresh_s`; Mode ▸ → `POST /mode`, Undo all → `POST /undo-all`, through an injected
+  HTTP client (httpx) to `API_BASE_URL` only. `pystray`/`PIL`/`httpx` are imported lazily.
 
 ### 6.8 Evidence export (CE)
 - The agent runs a rolling capture: `dumpcap -i <iface> -b filesize:20000 -b files:5 -w data/ring.pcapng`.
