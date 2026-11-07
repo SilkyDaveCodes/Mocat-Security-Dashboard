@@ -36,7 +36,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from agent import capture, config, procinfo
+from agent import api, capture, config, procinfo
 from agent.bus import Bus, Subscription
 from agent.detectors.beacon import BeaconDetector
 from agent.detectors.dga import DgaDetector
@@ -60,6 +60,7 @@ DetectorFactory = Callable[[dict[str, Any]], DetectorFn]
 ProcLookup = Callable[[int], ProcInfo | None]
 FirewallFn = Callable[[str], Action]
 Publish = Callable[[Any], None]
+ApiStarter = Callable[[Any, dict[str, Any]], Any]  # (FastAPI app, cfg) -> object with .stop()
 
 
 @dataclass(frozen=True)
@@ -321,15 +322,31 @@ async def run_agent(
     streamer_factory: capture.StreamerFactory = capture.make_streamer,
     detectors: Sequence[NamedDetector] | None = None,
     store: Store | None = None,
+    api_starter: ApiStarter | None = None,
+    tracker: api.FlowTracker | None = None,
 ) -> None:
-    """Start capture and the pipeline; return when capture ends (or on cancel / Ctrl+C)."""
+    """Start capture and the pipeline; return when capture ends (or on cancel / Ctrl+C).
+
+    ``api_starter`` (``main()`` passes :func:`agent.api.start_in_thread`) starts the REST API
+    on 127.0.0.1; without it no server is started (tests). Its ``POST /mode`` changes the
+    pipeline's scorer mode, and ``GET /apps`` reads ``tracker``, fed from its own bus
+    subscription.
+    """
     loop = asyncio.get_running_loop()
     bus = Bus.from_config(cfg, loop=loop)
     own_store = store is None
     db = Store.from_config(cfg) if store is None else store
     pipeline = Pipeline.from_config(cfg, db, bus.publish_threadsafe, detectors=detectors)
+    flows = tracker if tracker is not None else api.FlowTracker.from_config(cfg)
     sub = bus.subscribe("pipeline")
+    apps_sub = bus.subscribe("apps")
     worker = asyncio.create_task(pipeline.run(sub))
+    apps_worker = asyncio.create_task(_track_flows(apps_sub, flows))
+    server = None
+    if api_starter is not None:
+        app = api.create_app(db, pipeline.scorer, flows, allowlist=api.allowlist_from_config(cfg),
+                             publish=bus.publish_threadsafe)
+        server = api_starter(app, cfg)
     capture_done: asyncio.Future[int] = loop.create_future()
 
     def _capture() -> None:
@@ -359,16 +376,29 @@ async def run_agent(
         await capture_done
     except BaseException:
         worker.cancel()  # Ctrl+C / capture error: don't drain the backlog
+        apps_worker.cancel()
         raise
     finally:
         stop_event.set()  # the capture thread exits at its next flow
         sub.close()  # on a normal end, events already queued are still handled
+        apps_sub.close()
         try:
             with contextlib.suppress(asyncio.CancelledError):
                 await worker
+            with contextlib.suppress(asyncio.CancelledError):
+                await apps_worker
         finally:
+            if server is not None:
+                server.stop()
             if own_store:
                 db.close()
+
+
+async def _track_flows(sub: Subscription, tracker: api.FlowTracker) -> None:
+    """Feed every FlowEvent on ``sub`` to the ``GET /apps`` tracker until it is closed."""
+    async for event in sub:
+        if isinstance(event, FlowEvent):
+            tracker.add(event)
 
 
 def main() -> None:
@@ -381,7 +411,7 @@ def main() -> None:
         raise SystemExit(1) from exc
     stop_event = threading.Event()
     try:
-        asyncio.run(run_agent(cfg, stop_event))
+        asyncio.run(run_agent(cfg, stop_event, api_starter=api.start_in_thread))
     except KeyboardInterrupt:
         logger.info("Stopping HomeSOC agent")
     except capture.CaptureError as exc:

@@ -344,6 +344,18 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
   `POST /alerts/{id}/quarantine`, `GET /alerts/{id}/evidence` (writes a pcap; see §6.8).
 - `WS /ws`: pushes every Alert, Action, and a throttled FlowEvent summary (≤ 5 per second).
 - Bind `127.0.0.1:8765` only.
+- Implementation notes (`create_app(store, mode_holder, tracker, firewall_fns=, allowlist=,
+  publish=, clock=)`, every dependency injected; `main.py` starts it in a daemon thread via
+  `api.start_in_thread`, and `server_settings` refuses any host but `127.0.0.1`):
+  - `POST /mode` body `{"mode": "off|notify|auto"}` (else 422) sets the pipeline Scorer's mode
+    (takes effect on the next signal; not persisted, a restart uses `config.yaml`).
+  - `GET /apps` counts flows seen in the last `api.apps_window_s` (600 s), fed from the bus;
+    `GET /alerts?limit=N` (default 100) → `{"alerts": [...]}`.
+  - Errors: 404 unknown id; 409 action already undone / an `undo` record, alert with no exe
+    path, allowlisted app, or app already quarantined; 400 unsafe exe path; 502 the firewall
+    call failed (nothing is marked undone / no Action saved).
+  - Undo and undo-all save the returned `kind="undo"` Action; manual quarantine saves the Action,
+    appends its id to the alert's `action_ids` and rewrites "What we did".
 
 ### 6.7 `app/` (CE)
 - `pywebview` window loading `app/ui/index.html`; screens Home, Apps, Alerts, Settings.
@@ -378,7 +390,7 @@ Never use IP addresses or ports as model features.
 # one-time setup (Windows VM, admin PowerShell)
 #   1. Install Wireshark (includes Npcap) and Python 3.12
 py -3.12 -m venv .venv
-.venv\Scripts\pip install nfstream psutil scikit-learn pandas joblib fastapi uvicorn pywebview pystray pillow pyyaml tranco winotify pytest
+.venv\Scripts\pip install nfstream psutil scikit-learn pandas joblib fastapi uvicorn httpx pywebview pystray pillow pyyaml tranco winotify pytest
 
 # train
 .venv\Scripts\python models\train_dga.py

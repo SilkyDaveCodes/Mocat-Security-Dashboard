@@ -86,6 +86,7 @@ api:
   host: "127.0.0.1"            # never 0.0.0.0 (§9.5)
   port: 8765
   ws_flow_rate_limit_per_s: 5  # throttled FlowEvent summaries on /ws
+  apps_window_s: 600           # GET /apps counts flows seen in the last 10 minutes
 
 paths:
   allowlist: data/allowlist.txt    # exe names never auto-quarantined (§6.4)

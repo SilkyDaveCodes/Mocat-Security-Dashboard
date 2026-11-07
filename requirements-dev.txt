@@ -6,3 +6,6 @@ pyyaml
 psutil
 scikit-learn
 joblib
+fastapi
+httpx
+uvicorn

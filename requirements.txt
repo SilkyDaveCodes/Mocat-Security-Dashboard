@@ -6,6 +6,7 @@ pandas
 joblib
 fastapi
 uvicorn
+httpx         # FastAPI TestClient (tests)
 pywebview
 pystray
 pillow
