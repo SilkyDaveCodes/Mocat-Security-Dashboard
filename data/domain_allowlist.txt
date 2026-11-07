@@ -1,0 +1,10 @@
+# HomeSOC DGA allowlist: domains the DGA detector never scores (CLAUDE.md §6.3).
+# One domain per line; subdomains are covered too (cloudfront.net covers d1a2b3.cloudfront.net).
+# Matching is case-insensitive. Lines starting with # are comments.
+
+# CDNs / clouds that serve random-looking hostnames
+cloudfront.net
+akamaiedge.net
+akamaized.net
+azureedge.net
+1e100.net

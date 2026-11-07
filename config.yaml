@@ -25,6 +25,9 @@ detectors:
     probability_threshold: 0.8 # model.predict_proba >= this -> signal
     burst_count: 5             # >= this many DGA-looking lookups ...
     burst_window_s: 60         # ... by one process within this window raises the score
+    burst_boost: 0.1           # added to the score during a burst (capped at 1.0)
+    tranco_top_n: 100000       # skip hostnames whose domain is in the Tranco top N
+    skip_suffixes: [".local", ".arpa"]   # never scored (mDNS names, reverse lookups)
 
   beacon:
     history: 20                # flow start times kept per (process, dst_ip, dst_port)
@@ -71,3 +74,8 @@ paths:
   allowlist: data/allowlist.txt    # exe names never auto-quarantined (§6.4)
   test_intel: data/test_intel.txt  # lab-only "known bad" IPs (§9.2)
   cache_dir: data/cache
+  dga_model: models/dga.joblib     # trained by models/train_dga.py
+  # Cached Tranco list: a file ("rank,domain" or one domain per line), or a directory such as
+  # the tranco package cache that train_dga.py writes (newest *.csv is used). Never downloaded live.
+  tranco_cache: data/cache/tranco
+  domain_allowlist: data/domain_allowlist.txt  # domains the DGA detector never scores
