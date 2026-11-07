@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "smoke: end-to-end demo path (fake malware -> alert -> quarantine -> undo); tests/test_smoke.py",
+]
 
 [tool.ruff]
 target-version = "py312"

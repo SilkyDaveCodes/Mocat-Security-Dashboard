@@ -499,8 +499,10 @@ the pytest suite must run on any OS (Windows-only code is mocked at the PowerShe
 
 Setup for the checks on macOS/Linux: `python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`.
 
-**Smoke test:** none yet (added by #19) — exercises the main user path end to end
-(fake-malware flows → alert → quarantine → undo).
+**Smoke test:** `.venv/bin/python -m pytest -q tests/test_smoke.py` (Windows:
+`.venv\Scripts\python -m pytest -q tests/test_smoke.py`; also selectable with `-m smoke`, and part
+of the normal pytest run) — exercises the main user path end to end (fake-malware flows → alert →
+quarantine → undo) through the real pipeline in `auto` mode with only `subprocess.run` patched.
 
 ## Branches
 - **Working branch: `dev`.** All work happens here; `main` only receives merges once
