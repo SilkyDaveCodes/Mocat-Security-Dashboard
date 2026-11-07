@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import subprocess
 import sys
 import threading
+import time
 import types
 from ipaddress import ip_address
 from types import SimpleNamespace
@@ -671,3 +673,138 @@ def test_run_uses_psutil_fallback_by_default_with_ttl_from_config(
 
 def test_config_sets_port_pid_cache_ttl() -> None:
     assert config.load()["capture"]["port_pid_cache_ttl_s"] == 2
+
+
+# --- PortHistory: short connections keep their process (#58) ------------------------------------
+# NFStream reports a check-in only after it closed; by then psutil no longer lists its port.
+
+
+def _history(now: list[float], keep_s: float = 60.0) -> capture.PortHistory:
+    return capture.PortHistory(0.05, keep_s, clock=lambda: now[0])
+
+
+def test_closed_connection_keeps_its_process_through_the_history(fake_psutil: dict) -> None:
+    now = [100.0]
+    history = _history(now)
+    fake_psutil["conns"] = [_conn(51515, 777)]       # check-in open while the history polls
+    history.poll_once()
+    fake_psutil["conns"] = []                        # closed before NFStream reports the flow
+    fake_psutil["names"].clear()                     # and updater.exe has even exited
+
+    flow = _flow(system_process_name="", system_process_pid=0, src_port=51515, protocol=6)
+    without = to_flow_event(flow, PC_IPS, capture.PortPidResolver(2.0, _fixed()))
+    with_history = to_flow_event(flow, PC_IPS,
+                                 capture.PortPidResolver(2.0, _fixed(), history=history))
+
+    assert (without.process, without.pid) == ("unknown", -1)          # the #58 bug
+    assert (with_history.process, with_history.pid) == ("updater.exe", 777)
+
+
+def test_live_snapshot_wins_over_the_history(fake_psutil: dict) -> None:
+    now = [0.0]
+    history = _history(now)
+    fake_psutil["conns"] = [_conn(51515, 999, socket.SOCK_STREAM)]
+    history.poll_once()                               # remembered: mdns.exe
+    fake_psutil["conns"] = [_conn(51515, 777, socket.SOCK_STREAM)]  # owned now by updater.exe
+    resolver = capture.PortPidResolver(2.0, _fixed(), history=history)
+    event = to_flow_event(_flow(system_process_name="", src_port=51515), PC_IPS, resolver)
+    assert (event.process, event.pid) == ("updater.exe", 777)
+
+
+def test_history_keeps_the_latest_owner_and_matches_the_socket_type(fake_psutil: dict) -> None:
+    now = [0.0]
+    history = _history(now)
+    fake_psutil["conns"] = [_conn(51515, 777, socket.SOCK_STREAM)]
+    history.poll_once()
+    now[0] = 1.0
+    fake_psutil["conns"] = [_conn(51515, 888, socket.SOCK_STREAM),
+                            _conn(5353, 999, socket.SOCK_DGRAM)]
+    history.poll_once()
+    assert history.lookup((socket.SOCK_STREAM, 51515)) == ("rdpsvc.exe", 888)
+    assert history.lookup((socket.SOCK_DGRAM, 5353)) == ("mdns.exe", 999)
+    assert history.lookup((socket.SOCK_DGRAM, 51515)) is None  # TCP sighting, UDP flow
+
+
+def test_history_forgets_sightings_older_than_keep_s(fake_psutil: dict) -> None:
+    now = [0.0]
+    history = _history(now, keep_s=60.0)
+    fake_psutil["conns"] = [_conn(51515, 777)]
+    history.poll_once()
+    fake_psutil["conns"] = []
+    now[0] = 59.0
+    history.poll_once()
+    assert history.lookup((socket.SOCK_STREAM, 51515)) == ("updater.exe", 777)
+    now[0] = 60.5
+    assert history.lookup((socket.SOCK_STREAM, 51515)) is None   # expired on read
+    history.poll_once()
+    assert history._seen == {}                                   # and pruned on the next poll
+
+
+def test_history_poll_error_is_logged_once_and_never_raises(
+    fake_psutil: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    import psutil
+
+    history = _history([0.0])
+    fake_psutil["error"] = psutil.AccessDenied()
+    with caplog.at_level(logging.WARNING, logger="agent.capture"):
+        history.poll_once()
+        history.poll_once()
+    assert caplog.text.count("net_connections failed") == 1
+    fake_psutil["error"] = None
+    history.poll_once()
+    assert history.lookup((socket.SOCK_STREAM, 51515)) == ("updater.exe", 777)
+
+
+def test_history_rejects_non_positive_times() -> None:
+    with pytest.raises(ValueError):
+        capture.PortHistory(0, 60)
+    with pytest.raises(ValueError):
+        capture.PortHistory(0.05, 0)
+
+
+def test_history_thread_polls_until_stopped(fake_psutil: dict) -> None:
+    history = capture.PortHistory(0.01, 60)
+    history.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while fake_psutil["calls"] < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert fake_psutil["calls"] >= 3
+    finally:
+        history.stop()
+    calls = fake_psutil["calls"]
+    time.sleep(0.05)
+    assert fake_psutil["calls"] == calls          # stopped: no more polling
+    assert history.lookup((socket.SOCK_STREAM, 51515)) == ("updater.exe", 777)
+
+
+def test_run_starts_the_history_with_config_times_and_stops_it(
+    fake_psutil: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built: list[capture.PortHistory] = []
+    real_init = capture.PortHistory.__init__
+
+    def spy_init(self: Any, poll_s: float, keep_s: float, *args: Any, **kwargs: Any) -> None:
+        real_init(self, poll_s, keep_s, *args, **kwargs)
+        built.append(self)
+
+    monkeypatch.setattr(capture.PortHistory, "__init__", spy_init)
+    cfg = {"capture": {"local_ips_refresh_s": 60, "port_poll_interval_s": 0.02,
+                       "port_history_s": 30}}
+    capture.run(RecordingBus(), cfg, streamer_factory=lambda c: [],  # type: ignore[arg-type]
+                local_addresses=_fixed())
+    (history,) = built
+    assert (history._poll_s, history._keep_s) == (0.02, 30)
+    assert history._thread is None                 # stopped when capture ended
+
+    # An injected fallback (tests, the pipeline's own) starts no history thread.
+    capture.run(RecordingBus(), cfg, streamer_factory=lambda c: [],  # type: ignore[arg-type]
+                process_fallback=lambda f: None, local_addresses=_fixed())
+    assert len(built) == 1
+
+
+def test_config_sets_port_history_times() -> None:
+    capture_cfg = config.load()["capture"]
+    assert capture_cfg["port_poll_interval_s"] == 0.05
+    assert capture_cfg["port_history_s"] == 60

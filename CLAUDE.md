@@ -207,7 +207,11 @@ class Action:
   by another LAN/lab machine (e.g. the lab attacker `192.168.56.20`) is inbound, so `flow_model`
   sees it.
 - Fallback when `system_process_name` is empty: use `psutil.net_connections(kind="inet")` to map
-  the local port → PID.
+  the local port → PID. Short connections (beacon check-ins, DNS queries) have closed before
+  NFStream reports them, so a background `PortHistory` polls the owners every
+  `capture.port_poll_interval_s` (0.05 s) and remembers each port's last (PID, name) for
+  `capture.port_history_s` (60 s); the resolver uses it when the live snapshot has no owner.
+  Found in #58 (fake-malware flows were `unknown`, so never quarantined).
 - Put events on the bus. Never block the capture loop on slow work.
 
 ### 6.2 `agent/procinfo.py` (CE)

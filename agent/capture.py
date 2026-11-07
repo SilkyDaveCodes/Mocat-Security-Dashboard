@@ -40,6 +40,8 @@ UNKNOWN_PID = -1
 NFSTREAM_UNKNOWN_PIDS: frozenset[int] = frozenset({0, -1})  # NFStream's "no PID" values
 
 DEFAULT_PORT_PID_CACHE_TTL_S = 2.0  # used when config.yaml lacks capture.port_pid_cache_ttl_s
+DEFAULT_PORT_POLL_INTERVAL_S = 0.05  # used when config.yaml lacks capture.port_poll_interval_s
+DEFAULT_PORT_HISTORY_S = 60.0  # used when config.yaml lacks capture.port_history_s
 
 # IP protocol number -> socket type, for matching a flow to a psutil connection.
 _SOCK_TYPE_BY_PROTOCOL: dict[int, int] = {6: socket.SOCK_STREAM, 17: socket.SOCK_DGRAM}
@@ -259,6 +261,109 @@ class LocalAddresses:
         return self._ips
 
 
+def _socket_owners() -> dict[tuple[int, int], int]:
+    """``(socket type, local port) -> PID`` for every socket psutil can see right now.
+
+    Raises whatever ``psutil.net_connections`` raises (callers log it).
+    """
+    import psutil  # lazy: only live capture needs it
+
+    ports: dict[tuple[int, int], int] = {}
+    for conn in psutil.net_connections(kind="inet"):
+        port = getattr(conn.laddr, "port", None) if conn.laddr else None
+        if conn.pid is None or conn.pid in NFSTREAM_UNKNOWN_PIDS or not port:
+            continue
+        ports.setdefault((int(conn.type), int(port)), int(conn.pid))
+    return ports
+
+
+class PortHistory:
+    """Remembers who owned each local port over the last ``keep_s`` seconds.
+
+    Why: NFStream reports a short connection (a beacon check-in, a DNS query) only after it has
+    closed, so by the time :class:`PortPidResolver` asks psutil who owns its port, nobody does
+    and the flow would be ``"unknown"`` (alert only, never quarantined; found in #58). A
+    background thread (:meth:`start`) polls ``psutil.net_connections`` every ``poll_s`` seconds
+    and records each ``(socket type, port) -> (PID, name)`` sighting, with the name read while
+    the process is still alive. :meth:`lookup` returns the most recent owner seen within
+    ``keep_s``. Connections shorter than ``poll_s`` can still be missed.
+
+    Thread-safe. Never raises from the poll loop: a psutil error is logged once and retried.
+    """
+
+    def __init__(
+        self,
+        poll_s: float,
+        keep_s: float,
+        clock: Callable[[], float] = time.monotonic,
+        read: Callable[[], dict[tuple[int, int], int]] | None = None,
+    ) -> None:
+        if poll_s <= 0 or keep_s <= 0:
+            raise ValueError("port history poll and keep times must be > 0")
+        self._poll_s = poll_s
+        self._keep_s = keep_s
+        self._clock = clock
+        self._read = read or (lambda: _socket_owners())  # looked up at call time: patchable
+        self._seen: dict[tuple[int, int], tuple[int, str | None, float]] = {}
+        self._names: dict[int, str | None] = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._failing = False
+
+    def poll_once(self) -> None:
+        """Record the current owner of every port, then forget sightings older than ``keep_s``."""
+        try:
+            owners = self._read()
+        except Exception as exc:  # AccessDenied, OSError, ...
+            log = logger.debug if self._failing else logger.warning
+            log("psutil.net_connections failed (%s); port history not updated", exc)
+            self._failing = True
+            return
+        self._failing = False
+        now = self._clock()
+        live_pids = set(owners.values())
+        for pid in live_pids - self._names.keys():
+            self._names[pid] = _process_name(pid)  # read once per PID, while it is alive
+        with self._lock:
+            for key, pid in owners.items():
+                self._seen[key] = (pid, self._names.get(pid), now)
+            cutoff = now - self._keep_s
+            for key in [k for k, (_, _, seen) in self._seen.items() if seen < cutoff]:
+                del self._seen[key]
+            remembered = {pid for pid, _, _ in self._seen.values()}
+        for pid in [p for p in self._names if p not in remembered]:
+            del self._names[pid]
+
+    def lookup(self, key: tuple[int, int]) -> tuple[str | None, int] | None:
+        """``(name, pid)`` of the last process seen on ``key`` within ``keep_s``, else ``None``."""
+        with self._lock:
+            entry = self._seen.get(key)
+        if entry is None or entry[2] < self._clock() - self._keep_s:
+            return None
+        pid, name, _ = entry
+        return name, pid
+
+    def start(self) -> None:
+        """Poll in a daemon thread until :meth:`stop`."""
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, name="port-history", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            self.poll_once()
+            self._stop.wait(self._poll_s)
+
+
 class PortPidResolver:
     """Process fallback: find who owns a flow's local port with ``psutil.net_connections`` (§6.1).
 
@@ -269,6 +374,8 @@ class PortPidResolver:
 
     One ``net_connections`` snapshot (port -> PID, plus PID -> name) is cached for ``ttl_s``
     seconds, so a burst of flows costs one psutil call. After the TTL the next lookup refreshes it.
+    If the snapshot has no owner (the connection already closed) and a :class:`PortHistory` is
+    given, its most recent sighting of the port is used.
 
     Never raises: a psutil error (e.g. ``AccessDenied`` on macOS) is logged and the flow keeps
     the defaults. If the PID is found but its name can't be read (process gone / access
@@ -280,10 +387,12 @@ class PortPidResolver:
         ttl_s: float,
         local_addresses: LocalAddresses,
         clock: Callable[[], float] = time.monotonic,
+        history: PortHistory | None = None,
     ) -> None:
         self._ttl_s = ttl_s
         self._local_addresses = local_addresses
         self._clock = clock
+        self._history = history
         self._ports: dict[tuple[int, int], int] = {}
         self._names: dict[int, str | None] = {}
         self._read_at: float | None = None
@@ -294,9 +403,13 @@ class PortPidResolver:
         if key is None:
             return None
         pid = self._snapshot().get(key)
-        if pid is None:
+        if pid is not None:
+            return (self._name_of(pid) or UNKNOWN_PROCESS, pid)
+        seen = self._history.lookup(key) if self._history is not None else None
+        if seen is None:
             return None
-        return (self._name_of(pid) or UNKNOWN_PROCESS, pid)
+        name, pid = seen
+        return (name or UNKNOWN_PROCESS, pid)
 
     def _socket_key(self, flow: Any) -> tuple[int, int] | None:
         sock_type = _SOCK_TYPE_BY_PROTOCOL.get(_int(getattr(flow, "protocol", 0)))
@@ -316,22 +429,14 @@ class PortPidResolver:
         return self._ports
 
     def _read_ports(self) -> dict[tuple[int, int], int]:
-        import psutil  # lazy: only live capture needs it
-
         try:
-            conns = psutil.net_connections(kind="inet")
+            ports = _socket_owners()
         except Exception as exc:  # AccessDenied (macOS without root), OSError, ...
             log = logger.debug if self._failing else logger.warning
             log("psutil.net_connections failed (%s); process fallback has no data", exc)
             self._failing = True
             return {}
         self._failing = False
-        ports: dict[tuple[int, int], int] = {}
-        for conn in conns:
-            port = getattr(conn.laddr, "port", None) if conn.laddr else None
-            if conn.pid is None or conn.pid in NFSTREAM_UNKNOWN_PIDS or not port:
-                continue
-            ports.setdefault((int(conn.type), int(port)), int(conn.pid))
         return ports
 
     def _name_of(self, pid: int) -> str | None:
@@ -366,7 +471,9 @@ def run(
     A flow that fails to map is logged and skipped. ``local_addresses`` defaults to this PC's
     own addresses, refreshed every ``capture.local_ips_refresh_s`` seconds. ``process_fallback``
     defaults to a :class:`PortPidResolver` whose cache lives ``capture.port_pid_cache_ttl_s``
-    seconds (:data:`DEFAULT_PORT_PID_CACHE_TTL_S` if the key is missing).
+    seconds (:data:`DEFAULT_PORT_PID_CACHE_TTL_S` if the key is missing), backed by a
+    :class:`PortHistory` (``capture.port_poll_interval_s`` / ``capture.port_history_s``) that
+    runs while the capture runs, so short connections keep their process.
 
     Returns:
         The number of events published.
@@ -374,20 +481,30 @@ def run(
     capture_cfg = cfg.get("capture", {})
     if local_addresses is None:
         local_addresses = LocalAddresses(capture_cfg["local_ips_refresh_s"])
+    history: PortHistory | None = None
     if process_fallback is None:
         ttl_s = capture_cfg.get("port_pid_cache_ttl_s", DEFAULT_PORT_PID_CACHE_TTL_S)
-        process_fallback = PortPidResolver(ttl_s, local_addresses)
+        history = PortHistory(
+            capture_cfg.get("port_poll_interval_s", DEFAULT_PORT_POLL_INTERVAL_S),
+            capture_cfg.get("port_history_s", DEFAULT_PORT_HISTORY_S),
+        )
+        history.start()
+        process_fallback = PortPidResolver(ttl_s, local_addresses, history=history)
     published = 0
-    for flow in streamer_factory(cfg):
-        if stop_event is not None and stop_event.is_set():
-            break
-        try:
-            event = to_flow_event(flow, local_addresses.get(), process_fallback)
-        except Exception:
-            logger.exception("Could not map an NFStream flow to a FlowEvent; skipping it")
-            continue
-        bus.publish_threadsafe(event)
-        published += 1
+    try:
+        for flow in streamer_factory(cfg):
+            if stop_event is not None and stop_event.is_set():
+                break
+            try:
+                event = to_flow_event(flow, local_addresses.get(), process_fallback)
+            except Exception:
+                logger.exception("Could not map an NFStream flow to a FlowEvent; skipping it")
+                continue
+            bus.publish_threadsafe(event)
+            published += 1
+    finally:
+        if history is not None:
+            history.stop()
     logger.info("Capture stopped after publishing %d flow(s)", published)
     return published
 
