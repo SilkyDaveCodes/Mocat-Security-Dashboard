@@ -170,6 +170,11 @@ class Bus:
     def subscribers(self) -> tuple[Subscription, ...]:
         return tuple(self._subs)
 
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop | None:
+        """The event loop subscriptions live on (``None`` until one is attached)."""
+        return self._loop
+
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set the event loop that :meth:`publish_threadsafe` hands events to."""
         self._loop = loop

@@ -329,8 +329,8 @@ async def run_agent(
 
     ``api_starter`` (``main()`` passes :func:`agent.api.start_in_thread`) starts the REST API
     on 127.0.0.1; without it no server is started (tests). Its ``POST /mode`` changes the
-    pipeline's scorer mode, and ``GET /apps`` reads ``tracker``, fed from its own bus
-    subscription.
+    pipeline's scorer mode, ``GET /apps`` reads ``tracker``, fed from its own bus
+    subscription, and every ``WS /ws`` client gets its own subscription to ``bus``.
     """
     loop = asyncio.get_running_loop()
     bus = Bus.from_config(cfg, loop=loop)
@@ -345,7 +345,8 @@ async def run_agent(
     server = None
     if api_starter is not None:
         app = api.create_app(db, pipeline.scorer, flows, allowlist=api.allowlist_from_config(cfg),
-                             publish=bus.publish_threadsafe)
+                             publish=bus.publish_threadsafe, bus=bus,
+                             ws_flow_rate_per_s=api.ws_flow_rate_from_config(cfg))
         server = api_starter(app, cfg)
     capture_done: asyncio.Future[int] = loop.create_future()
 

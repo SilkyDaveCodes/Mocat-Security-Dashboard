@@ -12,7 +12,8 @@ Routes
     ``POST /undo-all``                  remove every rule in group HomeSOC, mark all undone
     ``POST /mode``                      ``{"mode": "off" | "notify" | "auto"}`` (else 422)
     ``POST /alerts/{id}/quarantine``    the user asks to quarantine the alert's app
-    (``GET /alerts/{id}/evidence`` and ``WS /ws`` are separate tickets.)
+    ``WS   /ws``                        pushes every Alert and Action, plus throttled flow summaries
+    (``GET /alerts/{id}/evidence`` is a separate ticket.)
 
 Error codes
     404 unknown alert / action id. 409 the request conflicts with the current state (action
@@ -33,10 +34,21 @@ Design
     * Route handlers are plain ``def``: FastAPI runs them in its thread pool, so a slow
       PowerShell call never blocks the server loop. :class:`Store` and :class:`FlowTracker`
       are thread-safe.
+    * ``WS /ws``: each connection gets its own bus subscription (made before the handshake is
+      accepted, closed on disconnect). Alerts and Actions are sent whole (``to_json``), never
+      dropped by the throttle; FlowEvents become a small ``"type": "flow"`` summary (no
+      ``features``), at most ``api.ws_flow_rate_limit_per_s`` per sliding 1-second window per
+      client (the injected clock); Signals are not sent. In the agent the bus lives on the main
+      loop while uvicorn runs its own loop in a thread, so :class:`_BusFeed` subscribes and reads
+      on the bus loop and hands each event across with ``run_coroutine_threadsafe``. A receive
+      task watches for the client's disconnect, so an idle closed socket is cleaned up at once.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import itertools
 import logging
 import threading
 import time
@@ -46,11 +58,12 @@ from dataclasses import dataclass, replace
 from pathlib import PureWindowsPath
 from typing import Any, Literal, Protocol
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket
 from pydantic import BaseModel
 
 from agent import alerts_text
 from agent import config as config_module
+from agent.bus import Bus, Subscription, SubscriptionClosed
 from agent.config import Allowlist
 from agent.events import Action, Alert, FlowEvent, to_json
 from agent.response import firewall
@@ -63,6 +76,10 @@ API_HOST = config_module.LOOPBACK_HOST  # §9.5: the only host the API may bind 
 DEFAULT_PORT = 8765
 DEFAULT_APPS_WINDOW_S = 600.0  # used when config.yaml lacks api.apps_window_s
 DEFAULT_ALERTS_LIMIT = 100
+DEFAULT_WS_FLOW_RATE_PER_S = 5  # used when config.yaml lacks api.ws_flow_rate_limit_per_s
+WS_FLOW_WINDOW_S = 1.0  # the throttle counts flow messages per this many seconds ("per second")
+WS_CLOSE_UNAVAILABLE = 1011  # no bus to read from (server error)
+WS_CLOSE_GOING_AWAY = 1001  # the agent is shutting down
 MAX_ALERTS_LIMIT = 1000
 UNKNOWN_PROCESS = "unknown"
 UNDO_KIND = "undo"
@@ -167,6 +184,143 @@ def _summarise(events: list[FlowEvent]) -> list[dict[str, Any]]:
     return sorted(result, key=total, reverse=True)
 
 
+# --- WS /ws: flow summaries, throttle, bus feed --------------------------------------------
+
+FLOW_SUMMARY_FIELDS = (
+    "ts_ms", "process", "pid", "src_ip", "dst_ip", "dst_port", "hostname", "app_proto",
+    "bytes_out", "bytes_in", "direction",
+)
+
+
+def flow_summary(event: FlowEvent) -> dict[str, Any]:
+    """The small ``"type": "flow"`` message /ws sends for a FlowEvent (no ``features``)."""
+    return {"type": "flow", **{name: getattr(event, name) for name in FLOW_SUMMARY_FIELDS}}
+
+
+class FlowThrottle:
+    """Allows at most ``rate_per_s`` flow messages in any ``WS_FLOW_WINDOW_S`` (sliding window).
+
+    One per /ws client. Not thread-safe (each connection's handler uses its own).
+    """
+
+    def __init__(self, rate_per_s: int, clock: Callable[[], float] = time.monotonic) -> None:
+        if rate_per_s < 0:
+            raise ValueError(f"ws flow rate must be >= 0, got {rate_per_s}")
+        self.rate_per_s = rate_per_s
+        self._clock = clock
+        self._sent: deque[float] = deque()
+
+    def allow(self) -> bool:
+        now = self._clock()
+        cutoff = now - WS_FLOW_WINDOW_S
+        while self._sent and self._sent[0] <= cutoff:
+            self._sent.popleft()
+        if len(self._sent) >= self.rate_per_s:
+            return False
+        self._sent.append(now)
+        return True
+
+
+def ws_flow_rate_from_config(cfg: dict[str, Any]) -> int:
+    """``api.ws_flow_rate_limit_per_s`` (default :data:`DEFAULT_WS_FLOW_RATE_PER_S`)."""
+    api_cfg = cfg.get("api") or {}
+    return int(api_cfg.get("ws_flow_rate_limit_per_s", DEFAULT_WS_FLOW_RATE_PER_S))
+
+
+def ws_message(event: Any, throttle: FlowThrottle) -> dict[str, Any] | None:
+    """The JSON to send for a bus event, or ``None`` to skip it (Signals, throttled flows)."""
+    if isinstance(event, (Alert, Action)):
+        return to_json(event)
+    if isinstance(event, FlowEvent) and throttle.allow():
+        return flow_summary(event)
+    return None
+
+
+class _BusFeed:
+    """One /ws connection's bus subscription, readable from the server's event loop.
+
+    ``asyncio.Queue`` (inside a Subscription) belongs to the bus loop. When the server runs on
+    that same loop (or the bus has none yet) the subscription is used directly; otherwise it is
+    created, read and closed on the bus loop and each event is handed over with
+    ``run_coroutine_threadsafe``.
+    """
+
+    def __init__(self, bus: Bus, name: str) -> None:
+        self._bus = bus
+        self._name = name
+        self._sub: Subscription | None = None
+        self._remote: asyncio.AbstractEventLoop | None = None
+
+    async def open(self) -> None:
+        """Subscribe. Raises ``RuntimeError`` if the bus loop is closed."""
+        here = asyncio.get_running_loop()
+        bus_loop = self._bus.loop
+        if bus_loop is None or bus_loop is here:
+            self._sub = self._bus.subscribe(self._name)
+            return
+
+        async def subscribe() -> Subscription:
+            return self._bus.subscribe(self._name)
+
+        self._remote = bus_loop
+        self._sub = await asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(subscribe(), bus_loop))
+
+    async def get(self) -> Any:
+        """The next event. Raises SubscriptionClosed (or RuntimeError: bus loop closed)."""
+        assert self._sub is not None, "open() first"
+        if self._remote is None:
+            return await self._sub.get()
+        return await asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(self._sub.get(), self._remote))
+
+    def close(self) -> None:
+        sub, self._sub = self._sub, None
+        if sub is None:
+            return
+        if self._remote is None:
+            sub.close()
+        else:
+            with contextlib.suppress(RuntimeError):  # bus loop already closed
+                self._remote.call_soon_threadsafe(sub.close)
+
+
+async def _serve_ws(websocket: WebSocket, feed: _BusFeed, throttle: FlowThrottle) -> None:
+    """Send bus events until the client disconnects or the bus subscription ends."""
+
+    async def pump() -> None:
+        while True:
+            try:
+                event = await feed.get()
+            except (SubscriptionClosed, RuntimeError):
+                with contextlib.suppress(Exception):
+                    await websocket.close(code=WS_CLOSE_GOING_AWAY)
+                return
+            message = ws_message(event, throttle)
+            if message is None:
+                continue
+            try:
+                await websocket.send_json(message)
+            except Exception:  # the client went away mid-send
+                return
+
+    async def watch() -> None:
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+
+    tasks = {asyncio.create_task(pump()), asyncio.create_task(watch())}
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(BaseException):
+                await task
+
+
 # --- request bodies -----------------------------------------------------------------------
 
 
@@ -208,6 +362,8 @@ def create_app(
     allowlist: Allowlist | None = None,
     publish: Publish | None = None,
     clock: Callable[[], float] = time.monotonic,
+    bus: Bus | None = None,
+    ws_flow_rate_per_s: int = DEFAULT_WS_FLOW_RATE_PER_S,
 ) -> FastAPI:
     """Build the API.
 
@@ -220,12 +376,18 @@ def create_app(
         allowlist: Exe names ``POST /alerts/{id}/quarantine`` refuses. Defaults to
             ``data/allowlist.txt``.
         publish: Puts new Actions / updated Alerts on the bus (thread-safe). Default: no-op.
-        clock: Monotonic seconds, for ``uptime_s``.
+        clock: Monotonic seconds, for ``uptime_s`` and the /ws flow throttle.
+        bus: The event bus ``WS /ws`` subscribes to (one subscription per connection). Without
+            it, /ws closes every connection with code 1011.
+        ws_flow_rate_per_s: Max flow summaries per second per /ws client
+            (``api.ws_flow_rate_limit_per_s``, see :func:`ws_flow_rate_from_config`).
     """
     fw = dict(firewall_fns) if firewall_fns is not None else default_firewall()
     trusted = allowlist if allowlist is not None else config_module.load_allowlist()
     send = publish or _no_publish
     started = clock()
+    FlowThrottle(ws_flow_rate_per_s, clock)  # validate the rate now, not on the first connect
+    ws_ids = itertools.count(1)
     app = FastAPI(title="HomeSOC agent API")
 
     def emit(item: Alert | Action) -> None:
@@ -329,6 +491,25 @@ def create_app(
         store.save_alert(updated)
         emit(updated)
         return {"alert": to_json(updated), "action": to_json(action)}
+
+    @app.websocket("/ws")
+    async def ws(websocket: WebSocket) -> None:
+        if bus is None:
+            await websocket.close(code=WS_CLOSE_UNAVAILABLE)
+            return
+        feed = _BusFeed(bus, f"ws{next(ws_ids)}")
+        try:
+            # Subscribe before accepting, so a client that is connected never misses an event.
+            await feed.open()
+        except RuntimeError:
+            logger.warning("WS /ws refused: the bus loop is closed")
+            await websocket.close(code=WS_CLOSE_UNAVAILABLE)
+            return
+        try:
+            await websocket.accept()
+            await _serve_ws(websocket, feed, FlowThrottle(ws_flow_rate_per_s, clock))
+        finally:
+            feed.close()
 
     return app
 

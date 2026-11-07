@@ -356,6 +356,13 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
     call failed (nothing is marked undone / no Action saved).
   - Undo and undo-all save the returned `kind="undo"` Action; manual quarantine saves the Action,
     appends its id to the alert's `action_ids` and rewrites "What we did".
+  - `WS /ws` (`create_app(..., bus=, ws_flow_rate_per_s=)`; `main.py` passes the agent's bus):
+    one bus subscription per connection, made before the handshake is accepted and closed on
+    disconnect. Alerts and Actions are sent whole (`to_json`) and never throttled; FlowEvents
+    become a `{"type": "flow", ts_ms, process, pid, src_ip, dst_ip, dst_port, hostname,
+    app_proto, bytes_out, bytes_in, direction}` summary, at most `api.ws_flow_rate_limit_per_s`
+    (5) per sliding 1 s window per client (injected clock); Signals are not sent. The bus lives
+    on the agent loop and uvicorn on its own, so reads cross loops via `run_coroutine_threadsafe`.
 
 ### 6.7 `app/` (CE)
 - `pywebview` window loading `app/ui/index.html`; screens Home, Apps, Alerts, Settings.
