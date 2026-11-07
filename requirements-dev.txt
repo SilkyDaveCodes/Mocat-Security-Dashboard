@@ -4,3 +4,5 @@ pytest
 ruff
 pyyaml
 psutil
+scikit-learn
+joblib
