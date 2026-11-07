@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH: Path = REPO_ROOT / "config.yaml"
 DEFAULT_ALLOWLIST_PATH: Path = REPO_ROOT / "data" / "allowlist.txt"
+DEFAULT_STORE_PATH: Path = REPO_ROOT / "data" / "homesoc.db"
 
 ALLOWED_MODES: tuple[str, ...] = ("off", "notify", "auto")
 REQUIRED_SECTIONS: tuple[str, ...] = (
@@ -94,6 +95,19 @@ def _validate(data: dict[str, Any], config_path: Path) -> None:
     capture = data["capture"]
     if not isinstance(capture, dict) or not capture.get("interface"):
         raise ConfigError(f"Config file {config_path} must set capture.interface")
+
+
+def store_path(cfg: dict[str, Any]) -> Path:
+    """The SQLite store path from ``store.path`` (relative paths are under the repo root).
+
+    Falls back to ``data/homesoc.db`` when the ``store`` section or key is absent.
+    """
+    store_cfg = cfg.get("store")
+    value = store_cfg.get("path") if isinstance(store_cfg, dict) else None
+    if not value:
+        return DEFAULT_STORE_PATH
+    path = Path(value)
+    return path if path.is_absolute() else REPO_ROOT / path
 
 
 @dataclass(frozen=True)

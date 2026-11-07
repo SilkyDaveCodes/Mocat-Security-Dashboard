@@ -305,6 +305,16 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
 - Return an `Action` and save it in the store. Undo must work after an agent restart (rule names
   are stored).
 
+### 6.5a `agent/store.py` (CE)
+- SQLite at `store.path` in `config.yaml` (default `data/homesoc.db`; relative to the repo root).
+  `Store(path)` (context manager / `close()`), one lock-guarded connection, safe across threads.
+- Tables `alerts` (whole Alert + nested Signals as JSON), `actions` (every field, `rule_names` as
+  JSON), `baselines` (one JSON-serialisable dict per process).
+- `save_alert/get_alert/list_alerts(limit)`, `save_action/get_action/list_actions(limit, undone)`,
+  `mark_undone(id) -> bool` (False for an unknown id), `mark_all_undone()`,
+  `save_baseline(process, dict)/load_baseline(process)/load_baselines()`. Saves are upserts;
+  lists are newest first (`ts_ms` desc, then latest inserted).
+
 ### 6.6 `agent/api.py` (CE)
 - `GET /status`, `GET /apps` (per-process bytes and destinations, last 10 min), `GET /alerts`,
   `POST /actions/{id}/undo`, `POST /undo-all`, `POST /mode` (`off|notify|auto`),

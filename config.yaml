@@ -69,6 +69,9 @@ bus:
   queue_size: 1000             # max events buffered per subscriber; when full, the oldest is dropped
   drop_log_every: 1000         # log a drop warning on the 1st drop and then every Nth drop per subscriber
 
+store:
+  path: data/homesoc.db        # SQLite: alerts, actions (with firewall rule names for Undo), baselines
+
 api:
   host: "127.0.0.1"            # never 0.0.0.0 (§9.5)
   port: 8765
