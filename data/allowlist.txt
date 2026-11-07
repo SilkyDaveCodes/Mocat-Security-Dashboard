@@ -1,0 +1,30 @@
+# HomeSOC allowlist: exe names that are never auto-quarantined (CLAUDE.md §6.4).
+# One exe name per line. Matching is case-insensitive. Lines starting with # are comments.
+
+# Browsers
+chrome.exe
+msedge.exe
+firefox.exe
+brave.exe
+opera.exe
+
+# Windows Update
+svchost.exe
+wuauclt.exe
+usoclient.exe
+MoUsoCoreWorker.exe
+
+# Steam
+steam.exe
+steamwebhelper.exe
+
+# Discord
+discord.exe
+
+# Spotify
+spotify.exe
+
+# Windows Defender
+MsMpEng.exe
+NisSrv.exe
+MpCmdRun.exe

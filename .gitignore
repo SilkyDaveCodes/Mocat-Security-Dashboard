@@ -5,3 +5,11 @@
 node_modules/
 __pycache__/
 .claude/settings.local.json
+.venv/
+.pytest_cache/
+.ruff_cache/
+data/cache/*
+!data/cache/.gitkeep
+data/evidence/
+data/*.pcapng
+*.db

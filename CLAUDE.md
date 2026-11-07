@@ -415,10 +415,12 @@ the pytest suite must run on any OS (Windows-only code is mocked at the PowerShe
 
 | Layer | Build | Test | Lint/typecheck |
 |-------|-------|------|----------------|
-| agent | none yet | none yet | none yet |
-| app | none yet | none yet | none yet |
+| agent | none (pure Python) | `.venv/bin/python -m pytest -q` (Windows: `.venv\Scripts\python -m pytest -q`) | `.venv/bin/ruff check .` (Windows: `.venv\Scripts\ruff check .`) |
+| app | none (pure Python) | covered by the same pytest run (app tickets add their tests to `tests/`) | covered by the same ruff run |
 
-**Smoke test:** none yet — exercises the main user path end to end
+Setup for the checks on macOS/Linux: `python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`.
+
+**Smoke test:** none yet (added by #19) — exercises the main user path end to end
 (fake-malware flows → alert → quarantine → undo).
 
 ## Branches

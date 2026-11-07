@@ -1,0 +1,66 @@
+# HomeSOC configuration. Every detector/scoring threshold lives here (CLAUDE.md §6, §10).
+# Times are in seconds unless the key name says otherwise.
+
+# Response mode: off (watch only) | notify (alert only) | auto (alert + contain).
+mode: notify
+
+capture:
+  # Interface name as shown in Wireshark's interface list (§6.1). Set per machine.
+  interface: "Ethernet"
+  idle_timeout: 10        # NFStream idle_timeout (s)
+  active_timeout: 30      # NFStream active_timeout (s)
+
+calibration:
+  minutes: 10             # anomaly calibration period (10 min for the demo, §6.3)
+
+detectors:
+  intel:
+    refresh_interval_s: 3600   # Feodo Tracker blocklist refresh (hourly)
+    score: 1.0                 # signal score on a blocklist hit
+
+  dga:
+    probability_threshold: 0.8 # model.predict_proba >= this -> signal
+    burst_count: 5             # >= this many DGA-looking lookups ...
+    burst_window_s: 60         # ... by one process within this window raises the score
+
+  beacon:
+    history: 20                # flow start times kept per (process, dst_ip, dst_port)
+    min_starts: 6              # starts needed before checking intervals
+    mean_interval_min_s: 2     # mean interval must be within [min, max]
+    mean_interval_max_s: 600
+    cv_max: 0.1                # coefficient of variation must be below this
+    score: 0.9                 # beacon score
+    high_score: 0.95           # score once high_score_min_starts is reached
+    high_score_min_starts: 12
+
+  anomaly:
+    min_windows: 30            # windows needed for a per-process IsolationForest
+    window_s: 60               # per-process aggregation window
+    bytes_out_threshold: 10000000   # 10 MB uploaded in one window
+    score_min: 0.6             # signal score range for anomalous windows
+    score_max: 0.9
+
+  flow_model:
+    probability_threshold: 0.85  # non-benign probability >= this -> signal
+
+scoring:
+  window_s: 60                 # signals kept per process
+  context_boost: 1.2           # x risk if unsigned or in a risky directory (capped at 1.0)
+  alert_threshold: 0.5         # risk >= this -> Alert
+  severity:                    # risk lower bounds per severity
+    medium: 0.5
+    high: 0.75
+    critical: 0.9
+  auto_quarantine:
+    risk: 0.85                 # auto mode: risk >= this ...
+    min_detectors: 2           # ... and at least this many distinct detectors
+
+api:
+  host: "127.0.0.1"            # never 0.0.0.0 (§9.5)
+  port: 8765
+  ws_flow_rate_limit_per_s: 5  # throttled FlowEvent summaries on /ws
+
+paths:
+  allowlist: data/allowlist.txt    # exe names never auto-quarantined (§6.4)
+  test_intel: data/test_intel.txt  # lab-only "known bad" IPs (§9.2)
+  cache_dir: data/cache

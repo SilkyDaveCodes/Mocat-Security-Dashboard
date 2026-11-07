@@ -1,0 +1,5 @@
+# Cross-platform dev/test dependencies. Enough to run the test suite on macOS/Linux
+# without the Windows-only runtime packages (nfstream, pywebview, winotify, ...).
+pytest
+ruff
+pyyaml

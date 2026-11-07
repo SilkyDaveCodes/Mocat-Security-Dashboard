@@ -1,0 +1,15 @@
+# Runtime dependencies (CLAUDE.md §8). Windows 10/11 x64, Python 3.12.
+nfstream
+psutil
+scikit-learn
+pandas
+joblib
+fastapi
+uvicorn
+pywebview
+pystray
+pillow
+pyyaml
+tranco
+winotify
+pytest

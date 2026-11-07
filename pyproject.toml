@@ -1,0 +1,17 @@
+[project]
+name = "homesoc"
+version = "0.1.0"
+description = "Personal network-security agent and app for home Windows PCs"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
