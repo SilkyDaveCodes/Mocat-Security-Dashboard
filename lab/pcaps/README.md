@@ -100,3 +100,16 @@ All four files (`benign.pcapng`, `portscan.pcapng`, `bruteforce.pcapng`, `dos.pc
 now exist in this directory and match the entries in `labels.yaml`. `models/train_flow.py`
 reads `labels.yaml`, loads each listed pcap, extracts flow features, and trains
 `models/flow.joblib` using the labels as the target. Do not commit the `.pcapng` files.
+
+## Training
+
+```powershell
+.venv\Scripts\python models\train_flow.py                 # reads lab\pcaps\labels.yaml
+.venv\Scripts\python models\train_flow.py --cap 20000 --out models\flow.joblib
+```
+
+Each pcap is read with NFStream (`statistical_analysis=True`); every flow becomes one row of
+the behavioural features in `agent/detectors/flow_features.py` (no IPs or ports). Every class
+is cut to `min(cap, smallest class)` rows (default cap 20,000) so the classes are balanced.
+The script prints class counts, a classification report, a confusion matrix (also saved to
+`models/flow_confusion.csv`) and the top features, then writes `models/flow.joblib`.

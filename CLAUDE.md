@@ -89,6 +89,7 @@ homesoc/
 │   │   ├── dga_features.py     # shared by training and live
 │   │   ├── beacon.py
 │   │   ├── anomaly.py
+│   │   ├── flow_features.py    # shared by train_flow and flow_model
 │   │   └── flow_model.py       # inbound attack classifier (from lab plan)
 │   └── response/
 │       └── firewall.py
@@ -263,6 +264,12 @@ Each detector exposes `def process(event: FlowEvent) -> list[Signal]`.
 - Port the lab plan's `features.py` + `WindowTracker` + `flow.joblib` (labels: benign, portscan,
   bruteforce, dos). Only applies to `direction == "inbound"`.
 - Non-benign with probability ≥ 0.85 → `Signal(target=src_ip, mitre="T1046"/"T1110"/"T1498")`.
+- Features (`agent/detectors/flow_features.py`, shared with `models/train_flow.py`): `vector(
+  event.features)` = the NFStream statistics `capture.py` copies (`RAW_FIELDS` ==
+  `capture.FEATURE_FIELDS`) + 6 derived ratios, in `FEATURE_NAMES` order; missing/NaN → 0.0.
+  No IP/port/MAC/timestamp/protocol features. `flow.joblib` is a dict: `model` (RandomForest on
+  string labels), `feature_names`, `classes`, `class_index` (label → `predict_proba` column).
+  Training reads `lab/pcaps/labels.yaml`; every class is cut to `min(20000, smallest class)` rows.
 
 ### 6.4 `agent/scoring.py` (CS)
 - Keep a 60-second window of signals per process.
