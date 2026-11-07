@@ -58,6 +58,10 @@ scoring:
     risk: 0.85                 # auto mode: risk >= this ...
     min_detectors: 2           # ... and at least this many distinct detectors
 
+bus:
+  queue_size: 1000             # max events buffered per subscriber; when full, the oldest is dropped
+  drop_log_every: 1000         # log a drop warning on the 1st drop and then every Nth drop per subscriber
+
 api:
   host: "127.0.0.1"            # never 0.0.0.0 (§9.5)
   port: 8765
