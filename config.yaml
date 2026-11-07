@@ -69,6 +69,10 @@ bus:
   queue_size: 1000             # max events buffered per subscriber; when full, the oldest is dropped
   drop_log_every: 1000         # log a drop warning on the 1st drop and then every Nth drop per subscriber
 
+pipeline:
+  procinfo_cache_ttl_s: 30     # reuse one process lookup (exe path, signature) per PID this long
+  prune_interval_s: 60         # how often scoring drops expired signal windows
+
 store:
   path: data/homesoc.db        # SQLite: alerts, actions (with firewall rule names for Undo), baselines
 

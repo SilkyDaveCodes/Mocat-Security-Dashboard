@@ -315,6 +315,20 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
   `save_baseline(process, dict)/load_baseline(process)/load_baselines()`. Saves are upserts;
   lists are newest first (`ts_ms` desc, then latest inserted).
 
+### 6.5b `agent/main.py` — the pipeline (CE)
+- `Pipeline(detectors, scorer, store, publish, firewall_fns=, proc_lookup=)`: every dependency is
+  injected so tests run without NFStream/PowerShell. `handle(event)` runs every detector (one that
+  raises is logged and skipped), feeds each Signal + `ProcInfo` to `Scorer.add`, carries out the
+  requested action (`FirewallError`/`ValueError` → logged, no Action), saves + publishes the
+  Action, then `finalize_alert` → saves + publishes the Alert. Never raises.
+- Capture runs in a daemon thread (`publish_threadsafe`); the pipeline reads its own bus
+  subscription and runs `handle` in a worker thread, one event at a time, so capture never waits.
+- `ProcInfo` is cached per PID for `pipeline.procinfo_cache_ttl_s`; a PID whose process name no
+  longer matches the signal's is treated as unknown (alert only, §9.6). The scorer is pruned every
+  `pipeline.prune_interval_s`.
+- Adding a detector = one `(name, factory)` entry in `DETECTOR_FACTORIES`; one that fails to start
+  is logged and left out.
+
 ### 6.6 `agent/api.py` (CE)
 - `GET /status`, `GET /apps` (per-process bytes and destinations, last 10 min), `GET /alerts`,
   `POST /actions/{id}/undo`, `POST /undo-all`, `POST /mode` (`off|notify|auto`),
