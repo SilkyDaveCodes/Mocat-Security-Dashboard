@@ -1,0 +1,26 @@
+# Flow-classifier training labels (CLAUDE.md §6.3, §7).
+#
+# Maps each captured pcap file (under lab/pcaps/) to exactly one of the four flow-classifier
+# labels: benign, portscan, bruteforce, dos. Each pcap is captured on the isolated host-only
+# lab VM while the matching lab/traffic generator runs (see README.md for the exact commands),
+# so every file here is one label's worth of traffic.
+#
+# Consumer: models/train_flow.py (not yet written -- ticket for train_flow builds flow.joblib
+# on the lab VM). ASSUMED shape, documented so the trainer can rely on it:
+#   * top-level "version": schema version (int),
+#   * top-level "pcaps": a list of {file, label} entries,
+#   * "file": the pcap filename relative to this directory (lab/pcaps/),
+#   * "label": one of {benign, portscan, bruteforce, dos}.
+# The pcap binaries themselves are large and are NOT committed (see .gitkeep / .gitignore);
+# they are produced on the lab VM by following README.md.
+
+version: 1
+pcaps:
+  - file: benign.pcapng
+    label: benign
+  - file: portscan.pcapng
+    label: portscan
+  - file: bruteforce.pcapng
+    label: bruteforce
+  - file: dos.pcapng
+    label: dos

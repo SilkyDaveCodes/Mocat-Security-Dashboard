@@ -12,4 +12,6 @@ data/cache/*
 !data/cache/.gitkeep
 data/evidence/
 data/*.pcapng
+lab/pcaps/*.pcap
+lab/pcaps/*.pcapng
 *.db
