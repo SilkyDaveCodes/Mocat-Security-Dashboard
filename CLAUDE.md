@@ -241,6 +241,15 @@ Each detector exposes `def process(event: FlowEvent) -> list[Signal]`.
   `bytes_out`, `flows`, `unique_dst_ips`, `new_countries` (optional).
 - After calibration: an `IsolationForest` per process with ≥ 30 windows; a brand-new process uses a
   global model. An anomalous window with `bytes_out > 10 MB` → `Signal(score 0.6–0.9, mitre="T1041")`.
+- Implementation notes (`AnomalyDetector(cfg, store, clock)`): windows are cut on 60 s boundaries
+  of the injected clock (processing time, not `FlowEvent.ts_ms`), outbound flows only. The open
+  window is scored as flows arrive, once past 10 MB; one Signal per process per window. Features
+  are `log1p` of the counters; `random_state=42`. Baselines are saved per process through
+  `store.save_baseline` as `{"version", "calibration_end_ms", "windows": [[bytes_out, flows,
+  unique_dst_ips], ...]}`; on restart they are reloaded, the stored calibration end is kept and
+  models are refitted from them. After calibration, normal (unflagged, ≤ 10 MB) windows keep being
+  learned (`learn_after_calibration`), so a process can reach 30 windows after the 10-min demo
+  calibration. The global model needs `global_min_windows` pooled windows, else no Signal.
 
 **`flow_model.py`** (CE)
 - Port the lab plan's `features.py` + `WindowTracker` + `flow.joblib` (labels: benign, portscan,
