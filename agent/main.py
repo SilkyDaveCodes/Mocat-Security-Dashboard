@@ -21,7 +21,7 @@ Design
     * Scoring owns the policy (mode, allowlist, unknown exe path); the pipeline only carries out
       the :class:`agent.scoring.ActionRequest` it is given and adds no block paths of its own.
 
-Adding a detector (anomaly, flow_model): write its module with a ``process(event)`` method and
+Adding a detector (e.g. anomaly): write its module with a ``process(event)`` method and
 add one ``(name, factory)`` entry to :data:`DETECTOR_FACTORIES`.
 """
 
@@ -40,6 +40,7 @@ from agent import api, capture, config, evidence, procinfo
 from agent.bus import Bus, Subscription
 from agent.detectors.beacon import BeaconDetector
 from agent.detectors.dga import DgaDetector
+from agent.detectors.flow_model import FlowModelDetector
 from agent.detectors.intel import IntelDetector
 from agent.events import Action, Alert, FlowEvent, Signal
 from agent.procinfo import ProcInfo
@@ -78,7 +79,9 @@ DETECTOR_FACTORIES: tuple[tuple[str, DetectorFactory], ...] = (
     ("intel", lambda cfg: IntelDetector(cfg).process),
     ("dga", lambda cfg: DgaDetector(cfg).process),
     ("beacon", lambda cfg: BeaconDetector(cfg).process),
-    # ("anomaly", ...) and ("flow_model", ...) go here once those detectors exist.
+    # Without models/flow.joblib it logs a warning and returns no signals.
+    ("flow_model", lambda cfg: FlowModelDetector(cfg).process),
+    # ("anomaly", ...) goes here once the pipeline passes it the store.
 )
 """Detectors the agent runs, in order. One entry per detector module."""
 

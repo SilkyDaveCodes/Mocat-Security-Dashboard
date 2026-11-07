@@ -272,6 +272,16 @@ Each detector exposes `def process(event: FlowEvent) -> list[Signal]`.
   No IP/port/MAC/timestamp/protocol features. `flow.joblib` is a dict: `model` (RandomForest on
   string labels), `feature_names`, `classes`, `class_index` (label → `predict_proba` column).
   Training reads `lab/pcaps/labels.yaml`; every class is cut to `min(20000, smallest class)` rows.
+- Implementation notes (`FlowModelDetector(cfg, model=, model_path=, clock=)`): the model is
+  per-flow, so each inbound flow gets one `predict_proba` row (columns in the bundle's
+  `feature_names` order). `WindowTracker` keeps those rows per **source IP** for
+  `detectors.flow_model.window_s` of the injected clock (processing time), newest
+  `max_flows_per_source`. The window's class = the **mean** probability per class over its flows;
+  the best non-benign class with mean ≥ `probability_threshold` and ≥ `min_flows` flows →
+  Signal (`score` = that mean, `process`/`pid` from the flow). Benign is never signalled; outbound
+  flows never reach the model. At most one Signal per (source IP, class) every `repeat_s`.
+  Model from `paths.flow_model`; a missing/unusable model is logged and the detector stays
+  registered but returns no signals (like `dga`).
 
 ### 6.4 `agent/scoring.py` (CS)
 - Keep a 60-second window of signals per process.

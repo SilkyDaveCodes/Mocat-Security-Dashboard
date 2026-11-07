@@ -355,7 +355,7 @@ def test_build_detectors_skips_one_that_fails_to_start(
 def test_default_detector_factories_cover_existing_detectors() -> None:
     from agent.main import DETECTOR_FACTORIES
 
-    assert [name for name, _ in DETECTOR_FACTORIES] == ["intel", "dga", "beacon"]
+    assert [name for name, _ in DETECTOR_FACTORIES] == ["intel", "dga", "beacon", "flow_model"]
 
 
 def test_dga_detector_without_model_does_not_crash(cfg: dict[str, Any], tmp_path: Path,

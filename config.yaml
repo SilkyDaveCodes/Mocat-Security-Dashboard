@@ -60,6 +60,12 @@ detectors:
 
   flow_model:
     probability_threshold: 0.85  # non-benign probability >= this -> signal
+    # Inbound flows are grouped per source IP over this window (processing time). The window's
+    # class probabilities are the mean of its flows' predict_proba rows (flow.joblib is per-flow).
+    window_s: 60
+    min_flows: 3                 # flows from one source IP needed in the window before a signal
+    max_flows_per_source: 1000   # newest flows kept per source IP (bounds memory during a flood)
+    repeat_s: 60                 # at most one signal per (source IP, attack class) this often
 
 scoring:
   window_s: 60                 # signals kept per process
@@ -117,6 +123,7 @@ paths:
   test_intel: data/test_intel.txt  # lab-only "known bad" IPs (§9.2)
   cache_dir: data/cache
   dga_model: models/dga.joblib     # trained by models/train_dga.py
+  flow_model: models/flow.joblib   # trained by models/train_flow.py (inbound attacks)
   # Cached Tranco list: a file ("rank,domain" or one domain per line), or a directory such as
   # the tranco package cache that train_dga.py writes (newest *.csv is used). Never downloaded live.
   tranco_cache: data/cache/tranco
