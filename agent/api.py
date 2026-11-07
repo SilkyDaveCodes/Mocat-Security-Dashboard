@@ -15,6 +15,10 @@ Routes
     ``WS   /ws``                        pushes every Alert and Action, plus throttled flow summaries
     (``GET /alerts/{id}/evidence`` is a separate ticket.)
 
+CORS
+    The app's window (pywebview, ``http://127.0.0.1:<port>/``) is another origin, so responses
+    carry CORS headers for loopback ``http`` origins only (:data:`CORS_ORIGIN_REGEX`).
+
 Error codes
     404 unknown alert / action id. 409 the request conflicts with the current state (action
     already undone or not undoable, alert without a known exe path, app on the allowlist, app
@@ -59,6 +63,7 @@ from pathlib import PureWindowsPath
 from typing import Any, Literal, Protocol
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent import alerts_text
@@ -83,6 +88,10 @@ WS_CLOSE_GOING_AWAY = 1001  # the agent is shutting down
 MAX_ALERTS_LIMIT = 1000
 UNKNOWN_PROCESS = "unknown"
 UNDO_KIND = "undo"
+# The app's pywebview window serves its UI from http://127.0.0.1:<random port>/, a different
+# origin than the API, so browsers need CORS headers. Only loopback http origins are allowed:
+# a web page from the internet (or a sandboxed "null" origin) never gets them.
+CORS_ORIGIN_REGEX = r"^http://(127\.0\.0\.1|localhost)(:[0-9]{1,5})?$"
 
 Mode = Literal["off", "notify", "auto"]
 Publish = Callable[[Any], None]
@@ -389,6 +398,12 @@ def create_app(
     FlowThrottle(ws_flow_rate_per_s, clock)  # validate the rate now, not on the first connect
     ws_ids = itertools.count(1)
     app = FastAPI(title="HomeSOC agent API")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=CORS_ORIGIN_REGEX,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
 
     def emit(item: Alert | Action) -> None:
         try:

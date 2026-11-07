@@ -363,6 +363,9 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
     app_proto, bytes_out, bytes_in, direction}` summary, at most `api.ws_flow_rate_limit_per_s`
     (5) per sliding 1 s window per client (injected clock); Signals are not sent. The bus lives
     on the agent loop and uvicorn on its own, so reads cross loops via `run_coroutine_threadsafe`.
+  - CORS: the app's window is served from `http://127.0.0.1:<port>/` (pywebview `http_server`),
+    a different origin, so responses carry CORS headers for loopback `http` origins only
+    (`CORS_ORIGIN_REGEX`: `127.0.0.1` / `localhost`, any port; never `null` or a remote origin).
 
 ### 6.7 `app/` (CE)
 - `pywebview` window loading `app/ui/index.html`; screens Home, Apps, Alerts, Settings.
@@ -370,6 +373,12 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
 - `pystray` tray icon: green (ok), yellow (alerts), red (active high/critical); menu:
   Open, Mode ▸, Undo all, Quit.
 - Toast notification for every high/critical alert.
+- Implementation notes: `app/main.py` holds `API_BASE_URL = "http://127.0.0.1:8765"` (and
+  `validate_api_url`, which refuses any other host); `app/ui/app.js` holds the same `API_BASE`
+  (a test keeps them equal and fails on any other host in the UI). `webview` is imported lazily;
+  `run(on_started=)` is the hook for the tray/toasts. `index.html` sets a CSP that only allows
+  `self` and the agent; no external resources. JS tests: `tests/js/test_app.mjs` (run by
+  `tests/test_app_ui.py` through `node`; skipped if `node` is missing).
 
 ### 6.8 Evidence export (CE)
 - The agent runs a rolling capture: `dumpcap -i <iface> -b filesize:20000 -b files:5 -w data/ring.pcapng`.
