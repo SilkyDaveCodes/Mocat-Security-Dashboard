@@ -14,4 +14,7 @@ data/evidence/
 data/*.pcapng
 lab/pcaps/*.pcap
 lab/pcaps/*.pcapng
+# Trained models are too big for git (dga.joblib ~125 MB > GitHub's 100 MB limit); share them
+# by drive/USB (tickets #52, #60). The installer still bundles them from the local models/ dir.
+models/*.joblib
 *.db
