@@ -62,6 +62,8 @@ scoring:
   auto_quarantine:
     risk: 0.85                 # auto mode: risk >= this ...
     min_detectors: 2           # ... and at least this many distinct detectors
+  auto_block_ip:
+    risk: 0.85                 # auto mode: inbound flow_model risk >= this -> block the source IP
 
 bus:
   queue_size: 1000             # max events buffered per subscriber; when full, the oldest is dropped

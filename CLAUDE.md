@@ -257,6 +257,19 @@ Each detector exposes `def process(event: FlowEvent) -> list[Signal]`.
     app (or block the IP for inbound `flow_model` signals).
   - Never quarantine anything in `data/allowlist.txt` (browsers, Windows Update, Steam, Discord,
     Spotify, Defender…). Alert only.
+  - Alerts are raised in every mode (`off` and `notify` included); only `auto` acts.
+- Implementation notes (`Scorer.add(signal, procinfo) -> Decision`):
+  - Distinct detectors: each detector counts once, with its highest score in the window.
+  - The window uses the clock time a signal was added, not `Signal.ts_ms`.
+  - Unknown exe path (`ProcInfo.exe_path is None`) → alert only, never quarantine (§9.6).
+  - Inbound `flow_model` signals are windowed per attacker IP (`signal.target`), get no context
+    boost, and in `auto` with risk ≥ `scoring.auto_block_ip.risk` (0.85) request `block_ip` on
+    that IP (never loopback/unspecified). The exe allowlist doesn't apply: no app is touched.
+  - Repeat suppression: until a key's window empties, a new alert is raised only when severity
+    rises, a new detector joins, or a new action is requested; each (kind, target) action is
+    requested once.
+  - Scoring returns a request; the pipeline carries it out, then `finalize_alert(decision, actions)`
+    fills `action_ids` and rewrites the text with what really happened.
 - Build the text with `alerts_text.py`.
 
 ### 6.5 `agent/response/firewall.py` (CE)
