@@ -394,6 +394,13 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
   counts as in force). Polls `GET /alerts`, `GET /actions`, `GET /status` every
   `app.tray_refresh_s`; Mode ▸ → `POST /mode`, Undo all → `POST /undo-all`, through an injected
   HTTP client (httpx) to `API_BASE_URL` only. `pystray`/`PIL`/`httpx` are imported lazily.
+- Toasts (`app/notify.py`, started by `app.main.main()` via `start_notifier()` before the window):
+  pure `Notifier.handle_message(msg)` toasts each `/ws` message with `type == "alert"` and
+  severity high/critical once per alert id (last `app.toast_dedupe_max` ids kept): title = alert
+  title, text = `what_you_should_do` cut to `app.toast_text_chars`. `windows_toast` uses
+  `winotify` (lazy import) and is a no-op off Windows (`is_windows()`, patchable) or without
+  winotify; `start_notifier` starts nothing off Windows. The listener uses `websockets` (sync
+  client, lazy) on `WS_URL` only (`validate_api_url`), retrying every `app.ws_reconnect_s`.
 
 ### 6.8 Evidence export (CE)
 - The agent runs a rolling capture: `dumpcap -i <iface> -b filesize:20000 -b files:5 -w data/ring.pcapng`.
@@ -421,7 +428,7 @@ Never use IP addresses or ports as model features.
 # one-time setup (Windows VM, admin PowerShell)
 #   1. Install Wireshark (includes Npcap) and Python 3.12
 py -3.12 -m venv .venv
-.venv\Scripts\pip install nfstream psutil scikit-learn pandas joblib fastapi uvicorn httpx pywebview pystray pillow pyyaml tranco winotify pytest
+.venv\Scripts\pip install nfstream psutil scikit-learn pandas joblib fastapi uvicorn httpx pywebview pystray pillow pyyaml tranco winotify websockets pytest
 
 # train
 .venv\Scripts\python models\train_dga.py

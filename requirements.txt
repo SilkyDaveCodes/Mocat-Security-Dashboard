@@ -13,4 +13,5 @@ pillow
 pyyaml
 tranco
 winotify
+websockets    # app/notify.py: sync client for WS /ws (toasts)
 pytest

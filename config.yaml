@@ -95,6 +95,9 @@ api:
 app:
   tray_refresh_s: 5            # the tray re-reads GET /alerts, /actions, /status this often
   http_timeout_s: 5            # give up on one app -> agent HTTP call after this long
+  toast_text_chars: 120        # a toast shows this much of what_you_should_do (app/notify.py)
+  toast_dedupe_max: 1000       # alert ids remembered so the same alert never toasts twice
+  ws_reconnect_s: 5            # the toast listener retries ws://127.0.0.1:8765/ws this often
 
 paths:
   allowlist: data/allowlist.txt    # exe names never auto-quarantined (§6.4)

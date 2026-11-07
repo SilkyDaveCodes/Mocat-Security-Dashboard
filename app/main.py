@@ -14,7 +14,8 @@ loopback origins only (``agent/api.py``, CORS).
 
 :func:`run` takes an optional ``on_started`` callback (run by pywebview once the GUI loop is up,
 with the window as argument); :func:`main` passes :func:`app.tray.start_tray` there, which shows
-the tray shield (``app/tray.py``). Toast notifications are a separate ticket.
+the tray shield (``app/tray.py``). Before the window opens, :func:`main` also starts the toast
+listener (:func:`app.notify.start_notifier`, a daemon thread on ``/ws``; a no-op off Windows).
 
 Run: ``python -m app.main`` (normal, non-admin terminal).
 """
@@ -109,8 +110,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger.info("Opening the HomeSOC window (agent API at %s)", API_BASE_URL)
-    from app.tray import start_tray  # here, not at the top: app.tray imports this module
+    # here, not at the top: app.tray and app.notify import this module
+    from app.notify import start_notifier
+    from app.tray import start_tray
 
+    start_notifier()
     run(on_started=start_tray)
 
 
