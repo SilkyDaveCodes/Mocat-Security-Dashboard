@@ -519,7 +519,9 @@ sudo dnsmasq -C lab/dnsmasq.conf    # answers all DNS lookups inside the lab
 ## 9. Safety rules (Claude Code must follow these)
 
 1. **No real malware, ever.** `lab/fake_malware/freegamecheats.py` is a harmless simulator. It may only:
-   - resolve made-up random-looking domain names (through the lab DNS),
+   - resolve made-up random-looking domain names (through the lab DNS: each query is sent
+     straight to `LAB_C2`:53 from its own UDP socket, never through the Windows resolver, so
+     Windows' DNS settings are left alone and the lookups are this process's own flows),
    - send HTTP GET check-ins to `LAB_C2 = "192.168.56.20"` every 5 s, **opening a new connection each
      time** (no keep-alive, so each check-in is its own flow),
    - POST ~20 MB of random bytes to the lab C2 once.

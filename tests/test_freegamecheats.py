@@ -18,7 +18,10 @@ guard is tested separately via validate_lab_target and main.
 from __future__ import annotations
 
 import math
+import socket
+import struct
 import threading
+import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -277,3 +280,126 @@ def test_generate_domains_count_zero_and_negative() -> None:
     assert fgc.generate_domains(1, 0) == []
     with pytest.raises(ValueError):
         fgc.generate_domains(1, -1)
+
+
+# --- DNS goes straight to the lab DNS, one fresh socket per lookup (found in #58) -----------
+# Through the Windows resolver the lookups were sent by svchost.exe (allowlisted), and Windows'
+# own DNS had to point at the wildcard lab DNS, which sent every app's traffic to the C2.
+
+
+def _parse_dns_query(packet: bytes) -> tuple[int, int, int, str, int, int]:
+    """(id, flags, qdcount, qname, qtype, qclass) of a one-question DNS query."""
+    query_id, flags, qdcount = struct.unpack(">HHH", packet[:6])
+    labels, i = [], 12
+    while packet[i]:
+        labels.append(packet[i + 1 : i + 1 + packet[i]].decode("ascii"))
+        i += 1 + packet[i]
+    qtype, qclass = struct.unpack(">HH", packet[i + 1 : i + 5])
+    return query_id, flags, qdcount, ".".join(labels), qtype, qclass
+
+
+class _UdpDnsServer:
+    """A real UDP socket on 127.0.0.1 that records each query and its source port."""
+
+    def __init__(self, answer: bool = True) -> None:
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.settimeout(0.2)
+        self.port = self.sock.getsockname()[1]
+        self.answer = answer
+        self.queries: list[tuple[int, bytes]] = []  # (client source port, packet)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while not self._stop.is_set():
+            try:
+                data, addr = self.sock.recvfrom(512)
+            except OSError:
+                continue
+            self.queries.append((addr[1], data))
+            if self.answer:
+                self.sock.sendto(data[:2] + b"\x81\x80" + data[4:], addr)  # echo as a reply
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5)
+        self.sock.close()
+
+
+@pytest.fixture
+def dns_server() -> Iterator[_UdpDnsServer]:
+    srv = _UdpDnsServer()
+    try:
+        yield srv
+    finally:
+        srv.close()
+
+
+def test_build_dns_query_is_one_a_question_for_the_domain() -> None:
+    packet = fgc.build_dns_query("qwhzkxlmpv.xyz", 0x1234)
+    assert _parse_dns_query(packet) == (0x1234, 0x0100, 1, "qwhzkxlmpv.xyz", 1, 1)
+
+
+def test_each_lookup_goes_to_the_given_dns_server_from_a_fresh_socket(
+    dns_server: _UdpDnsServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fgc.socket, "getaddrinfo", _NetworkTripwire())  # never the OS resolver
+    domains = fgc.generate_domains(7, 5)
+
+    sent = fgc.resolve_domains(domains, "127.0.0.1", port=dns_server.port, timeout=1.0)
+
+    assert sent == 5
+    assert [_parse_dns_query(p)[3] for _, p in dns_server.queries] == domains
+    # One socket per lookup -> a distinct source port each time -> one flow per lookup.
+    assert len({src_port for src_port, _ in dns_server.queries}) == 5
+
+
+def test_unanswered_lookup_times_out_and_the_rest_still_go_out() -> None:
+    srv = _UdpDnsServer(answer=False)
+    try:
+        sent = fgc.resolve_domains(["aaaaaaaaaa.com", "bbbbbbbbbb.net"], "127.0.0.1",
+                                   port=srv.port, timeout=0.2)
+        assert sent == 2
+        deadline = time.monotonic() + 5.0  # wait for the server thread; no fixed sleep
+        while len(srv.queries) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(srv.queries) == 2
+    finally:
+        srv.close()
+
+
+def _closed_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()  # nothing listens here now: connects are refused
+    return port
+
+
+def test_failed_check_ins_are_logged_and_the_loop_keeps_going() -> None:
+    # After HomeSOC quarantines the app every check-in fails; the sim must keep trying so
+    # check-ins resume after Undo (#58 step 8) instead of crashing on the first refusal.
+    assert fgc.run_check_ins("127.0.0.1", _closed_port(), count=3, interval=0) == 3
+
+
+def test_main_carries_on_to_check_ins_when_the_upload_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(fgc.ENV_HOMESOC_LAB, "1")
+    monkeypatch.setenv(fgc.ENV_LAB_C2, LAB_C2)
+    lookups: list[tuple[list[str], str]] = []
+    check_ins: list[str] = []
+
+    def refused_upload(*args: object, **kwargs: object) -> int:
+        raise ConnectionRefusedError("C2 down")
+
+    monkeypatch.setattr(fgc, "resolve_domains", lambda d, server: lookups.append((d, server)))
+    monkeypatch.setattr(fgc, "upload", refused_upload)
+    monkeypatch.setattr(fgc, "run_check_ins",
+                        lambda host, port, **kw: check_ins.append(host) or 1)
+
+    assert fgc.main(["--checkins", "1"]) == 0
+    assert lookups[0][1] == LAB_C2  # lookups are sent to the lab DNS on the C2 address
+    assert check_ins == [LAB_C2]
