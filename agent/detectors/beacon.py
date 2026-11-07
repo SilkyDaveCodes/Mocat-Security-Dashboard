@@ -13,6 +13,14 @@ Details:
     * Start times are kept sorted, so out-of-order events are handled; an exact duplicate start
       time for the same key is ignored (it would add a fake 0 s interval).
     * The "spread" in the reason text is the population standard deviation of the intervals.
+    * With ``new_connections_only`` (default on) a start is a *new connection*: a flow on the
+      same ``(src_ip, src_port, protocol)`` as a start already held for that key is the same
+      connection again, not a new check-in, and adds no start. NFStream cuts one long-lived
+      connection into many flows (a new flow after ``capture.idle_timeout`` of silence or every
+      ``capture.active_timeout``), so a websocket keepalive (Spotify, Discord, Chrome push) or a
+      long download would otherwise look like a perfectly regular beacon (ticket #49 FP test).
+      The lab sim opens a new connection per check-in (§9.1), as most C2 beacons do. A flow
+      with no source port (``0``, e.g. ICMP) always counts as new.
 """
 
 from __future__ import annotations
@@ -33,6 +41,8 @@ OUTBOUND = "outbound"
 MS_PER_S = 1000
 
 BeaconKey = tuple[str, str, int]
+ConnId = tuple[str, int, int]  # (src_ip, src_port, protocol): one connection on this PC's side
+DEFAULT_NEW_CONNECTIONS_ONLY = True
 
 
 class BeaconDetector:
@@ -53,13 +63,20 @@ class BeaconDetector:
         self._score = float(beacon_cfg["score"])
         self._high_score = float(beacon_cfg["high_score"])
         self._high_score_min_starts = int(beacon_cfg["high_score_min_starts"])
-        self._starts: dict[BeaconKey, list[int]] = {}
+        self._new_connections_only = bool(
+            beacon_cfg.get("new_connections_only", DEFAULT_NEW_CONNECTIONS_ONLY)
+        )
+        # Per key: (start ms, connection id or None), sorted by start time.
+        self._starts: dict[BeaconKey, list[tuple[int, ConnId | None]]] = {}
 
     def process(self, event: FlowEvent) -> list[Signal]:
         """Return one beacon Signal if this flow's connection now looks periodic, else ``[]``."""
         if event.direction != OUTBOUND or not event.dst_ip:
             return []
-        starts = self._record((event.process, event.dst_ip, event.dst_port), event.ts_ms)
+        conn = (event.src_ip, event.src_port, event.protocol) if event.src_port > 0 else None
+        starts = self._record((event.process, event.dst_ip, event.dst_port), event.ts_ms, conn)
+        if starts is None:  # the same connection again: no new start
+            return []
         if len(starts) < self._min_starts:
             return []
 
@@ -93,15 +110,19 @@ class BeaconDetector:
             )
         ]
 
-    def _record(self, key: BeaconKey, ts_ms: int) -> list[int]:
-        """Insert a start time (sorted, no duplicates), keep the newest ``history``; return them."""
-        starts = self._starts.setdefault(key, [])
-        index = bisect.bisect_left(starts, ts_ms)
-        if index == len(starts) or starts[index] != ts_ms:
-            starts.insert(index, ts_ms)
-            if len(starts) > self._history:
-                del starts[: len(starts) - self._history]
-        return starts
+    def _record(self, key: BeaconKey, ts_ms: int, conn: ConnId | None) -> list[int] | None:
+        """Insert a start (sorted, no duplicate times), keep the newest ``history``; return the
+        start times. ``None`` if ``conn`` is a connection already held (not a new start)."""
+        entries = self._starts.setdefault(key, [])
+        if (self._new_connections_only and conn is not None
+                and any(held == conn for _, held in entries)):
+            return None
+        index = bisect.bisect_left(entries, ts_ms, key=lambda entry: entry[0])
+        if index == len(entries) or entries[index][0] != ts_ms:
+            entries.insert(index, (ts_ms, conn))
+            if len(entries) > self._history:
+                del entries[: len(entries) - self._history]
+        return [ts for ts, _ in entries]
 
 
 _default_detector: BeaconDetector | None = None

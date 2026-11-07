@@ -40,6 +40,22 @@ python3.12 -m venv .venv          # 3.12 is the target; 3.13 also works for the 
 .venv/bin/ruff check .
 ```
 
+## False-positive test (record an hour of normal use)
+
+On the Windows VM, in an admin terminal, use the PC normally for an hour while this records
+every flow (only process names, IPs, hostnames, ports, byte counts and rebased timestamps; no
+PIDs, exe paths or user names):
+
+```powershell
+.venv\Scripts\python -m lab.fp_recording --minutes 60
+# -> tests\fixtures\normal_use_vm.jsonl (add --force to overwrite, --out to pick another file)
+```
+
+`tests/test_fp_replay.py` replays every `tests/fixtures/normal_use_*.jsonl` through the full
+pipeline in `auto` mode and fails on any medium-or-higher alert or firewall action. Until the VM
+recording lands, the only fixture is the synthetic `normal_use_synthetic.jsonl`
+(`python -m lab.synth_normal_use` regenerates it). Details: `docs/fp-test.md`.
+
 ## Safety
 
 HomeSOC never binds its API to anything but `127.0.0.1`, only creates firewall rules in the

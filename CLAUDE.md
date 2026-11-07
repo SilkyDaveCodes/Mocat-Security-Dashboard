@@ -107,6 +107,8 @@ homesoc/
 ├── lab/
 │   ├── c2_server.py            # fake C2 on the lab Ubuntu VM
 │   ├── dnsmasq.conf            # answers all lookups inside the lab
+│   ├── fp_recording.py         # records normal-use FlowEvents for the FP test (docs/fp-test.md)
+│   ├── synth_normal_use.py     # generates the synthetic normal-use fixture
 │   └── fake_malware/
 │       └── freegamecheats.py   # HARMLESS demo "malware" (see §9)
 ├── installer/
@@ -235,6 +237,11 @@ Each detector exposes `def process(event: FlowEvent) -> list[Signal]`.
 - With ≥ 6 starts: compute intervals; if the mean is 2–600 s and the coefficient of variation is
   < 0.1 → beacon. `score = 0.9` (0.95 if ≥ 12 starts). `mitre="T1071.001"`.
 - Reason text example: `"checks in with 192.168.56.20 every 5.0 s (±0.2 s)"`.
+- A start must be a **new connection** (`detectors.beacon.new_connections_only`, on): a flow on
+  the same `(src_ip, src_port, protocol)` as a start already held for the key is the same
+  connection cut again by NFStream's idle/active timeout (websocket keepalives, long downloads)
+  and adds no start. Source port 0 (ICMP) always counts. Found by the FP test (#49,
+  `docs/fp-test.md`).
 
 **`anomaly.py`** (CS + CE)
 - Calibration period (configurable; 10 min for the demo) learns per-process 60-second windows:
@@ -426,6 +433,10 @@ py -3.12 -m venv .venv
 
 # tests
 .venv\Scripts\python -m pytest -q
+
+# false-positive test: record 1 h of normal use (ADMIN terminal) -> tests\fixtures\normal_use_vm.jsonl
+.venv\Scripts\python -m lab.fp_recording --minutes 60
+#   replayed by tests/test_fp_replay.py; see docs/fp-test.md
 
 # emergency: remove every HomeSOC firewall rule
 Remove-NetFirewallRule -Group "HomeSOC"

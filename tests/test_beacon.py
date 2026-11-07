@@ -6,6 +6,7 @@ All flows are synthetic FlowEvents; randomness is seeded so every run sees the s
 from __future__ import annotations
 
 import copy
+import itertools
 import random
 import re
 from typing import Any
@@ -33,23 +34,30 @@ def detector(cfg: dict[str, Any]) -> BeaconDetector:
     return BeaconDetector(cfg)
 
 
+_source_ports = itertools.count(50000)
+
+
 def flow(
     ts_ms: int,
     dst_ip: str = C2_IP,
     dst_port: int = C2_PORT,
     process: str = PROC,
     direction: str = "outbound",
+    src_port: int | None = None,
+    protocol: int = 6,
 ) -> FlowEvent:
+    """One flow. By default each flow is a new connection (its own source port), like the lab
+    sim's check-ins (§9.1); pass ``src_port`` to repeat a connection."""
     return FlowEvent(
         ts_ms=ts_ms,
         end_ms=ts_ms + 50,
         process=process,
         pid=4242,
         src_ip="192.168.56.10",
-        src_port=50000,
+        src_port=next(_source_ports) if src_port is None else src_port,
         dst_ip=dst_ip,
         dst_port=dst_port,
-        protocol=6,
+        protocol=protocol,
         direction=direction,  # type: ignore[arg-type]
     )
 
@@ -218,6 +226,61 @@ def test_thresholds_come_from_config(cfg: dict[str, Any]) -> None:
     assert results[3][0].score == pytest.approx(0.6)
     # cv_max 0.001 rejects a ±0.1 s jitter that the default config accepts.
     assert all(r == [] for r in feed(BeaconDetector(cfg), jittered_starts(6, 5.0, 0.1)))
+
+
+# --- one long-lived connection is not a beacon (ticket #49 FP test) ---------------------------
+
+
+def test_keepalive_on_one_connection_does_not_trigger(detector: BeaconDetector) -> None:
+    # A websocket ping every 30.0 s on one connection: NFStream emits a new flow per ping
+    # (idle timeout), all on the same source port. That is one connection, not 20 check-ins.
+    starts = [T0_MS + i * 30_000 for i in range(20)]
+    assert all(r == [] for r in feed(detector, starts, dst_port=443, src_port=52974))
+
+
+def test_active_timeout_chunks_of_one_download_do_not_trigger(detector: BeaconDetector) -> None:
+    # A long download cut every 30 s by NFStream's active timeout: same 5-tuple each time.
+    starts = jittered_starts(12, 30.0, 0.05)
+    assert all(r == [] for r in feed(detector, starts, dst_port=80, src_port=57291))
+
+
+def test_new_connections_still_trigger_among_repeats_of_another(detector: BeaconDetector) -> None:
+    # A long-lived connection to the same IP:port, opened 5 s before the first check-in, sends
+    # a packet every 7 s. Its repeats add no starts: had they been counted, the 7 s ones
+    # interleaved with the 5 s check-ins would break the regularity and nothing would fire.
+    for i in range(10):
+        assert detector.process(flow(T0_MS - 5_000 + i * 7_000, src_port=40000)) == []
+    results = feed(detector, jittered_starts(6, 5.0, 0.1))
+    assert results[-1] and results[-1][0].score == pytest.approx(0.9)
+    # 1 start from the long-lived connection + 6 new ones are held: 7 starts, not 16.
+    assert "7 regular connections" in results[-1][0].reasons[1]
+
+
+def test_same_source_port_over_another_protocol_is_a_new_connection(
+    detector: BeaconDetector,
+) -> None:
+    starts = jittered_starts(6, 5.0, 0.1)
+    results = [detector.process(flow(ts, src_port=50123, protocol=6 if i == 0 else 17))
+               for i, ts in enumerate(starts)]
+    # Starts 2..6 are one UDP connection: TCP start + 1 UDP start = 2 held, no signal.
+    assert all(r == [] for r in results)
+
+
+def test_flows_without_source_port_always_count_as_new(detector: BeaconDetector) -> None:
+    # ICMP has no ports (NFStream reports 0): we can't tell connections apart, so each counts.
+    results = feed(detector, jittered_starts(6, 5.0, 0.1), src_port=0, protocol=1)
+    assert results[-1][0].score == pytest.approx(0.9)
+
+
+def test_new_connections_only_can_be_turned_off(cfg: dict[str, Any]) -> None:
+    cfg["detectors"]["beacon"]["new_connections_only"] = False
+    det = BeaconDetector(cfg)
+    starts = [T0_MS + i * 30_000 for i in range(6)]
+    assert feed(det, starts, dst_port=443, src_port=52974)[-1][0].score == pytest.approx(0.9)
+
+
+def test_new_connections_only_is_on_in_config(cfg: dict[str, Any]) -> None:
+    assert cfg["detectors"]["beacon"]["new_connections_only"] is True
 
 
 def test_module_level_process_uses_default_detector(monkeypatch: pytest.MonkeyPatch) -> None:

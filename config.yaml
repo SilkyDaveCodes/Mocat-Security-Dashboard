@@ -40,6 +40,10 @@ detectors:
     score: 0.9                 # beacon score
     high_score: 0.95           # score once high_score_min_starts is reached
     high_score_min_starts: 12
+    # Count a start only for a NEW connection (new source port). One long-lived connection
+    # that NFStream cuts into many flows (idle/active timeout) is not a check-in: without this,
+    # websocket keepalives and long downloads look like beacons (FP test, ticket #49).
+    new_connections_only: true
 
   anomaly:
     min_windows: 30            # windows needed for a per-process IsolationForest
