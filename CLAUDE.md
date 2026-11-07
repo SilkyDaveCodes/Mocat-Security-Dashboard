@@ -201,8 +201,12 @@ class Action:
 - Put events on the bus. Never block the capture loop on slow work.
 
 ### 6.2 `agent/procinfo.py` (CE)
-- `info(pid) -> dict`: `exe_path`, `name`, `in_risky_dir` (Downloads, `%TEMP%`, `AppData\Local\Temp`),
-  `signed` (via PowerShell `Get-AuthenticodeSignature`, cached by path).
+- `info(pid) -> ProcInfo` (frozen dataclass; `.as_dict()` gives the dict): `pid`, `name`, `exe_path`,
+  `in_risky_dir` (Downloads, `%TEMP%`, `AppData\Local\Temp`), `signed` (via PowerShell
+  `Get-AuthenticodeSignature`, cached by path).
+- When the exe path can't be read (process gone / access denied), `exe_path`, `in_risky_dir` and
+  `signed` are `None`, meaning **unknown, not unsigned**. Scoring (§6.4) must not apply the
+  unsigned/risky-dir boost for `None`. `info()` never raises for a vanished process.
 - `kill(pid)`: only called after the user confirms in the UI.
 
 ### 6.3 Detectors (CS, except `flow_model`)
