@@ -17,6 +17,9 @@ detectors:
   intel:
     refresh_interval_s: 3600   # Feodo Tracker blocklist refresh (hourly)
     score: 1.0                 # signal score on a blocklist hit
+    # abuse.ch Feodo Tracker "recommended" list (§6.3). Downloaded only, never connected to (§9.2).
+    feed_url: "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt"
+    download_timeout_s: 10     # give up on a blocklist download after this long
 
   dga:
     probability_threshold: 0.8 # model.predict_proba >= this -> signal
