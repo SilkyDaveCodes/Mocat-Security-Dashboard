@@ -195,7 +195,11 @@ class Action:
 - Settings: `statistical_analysis=True`, `system_visibility_mode=1` (process name/PID),
   `idle_timeout=10`, `active_timeout=30`. **Keep `n_dissections` at its default (20)**, because
   `requested_server_name` (the DNS/TLS hostname) needs it.
-- Map each NFlow → `FlowEvent`. `direction="inbound"` if `src_ip` is not a local address.
+- Map each NFlow → `FlowEvent`. `direction="outbound"` if `src_ip` is **one of this PC's own
+  addresses** (from `psutil.net_if_addrs()`, re-read every `capture.local_ips_refresh_s`) or
+  loopback; otherwise `"inbound"`. "Local" means *this host*, not "any private IP": a flow started
+  by another LAN/lab machine (e.g. the lab attacker `192.168.56.20`) is inbound, so `flow_model`
+  sees it.
 - Fallback when `system_process_name` is empty: use `psutil.net_connections(kind="inet")` to map
   the local port → PID.
 - Put events on the bus. Never block the capture loop on slow work.
