@@ -47,7 +47,7 @@ DEFAULT_HTTP_TIMEOUT_S = 5.0  # used when config.yaml lacks app.http_timeout_s
 ALERTS_LIMIT = 1000  # alerts / actions fetched per refresh (the API's own maximum for alerts)
 ACTIONS_LIMIT = 10000
 
-ICON_NAME = "Mocat HomeSOC"
+ICON_NAME = "MoCat HomeSOC"
 ICON_SIZE = 64
 COLOURS_RGB: dict[str, tuple[int, int, int]] = {
     "green": (46, 160, 67),
@@ -55,9 +55,9 @@ COLOURS_RGB: dict[str, tuple[int, int, int]] = {
     "red": (210, 45, 45),
 }
 TITLES: dict[str, str] = {
-    "green": "Mocat HomeSOC: all clear",
-    "yellow": "Mocat HomeSOC: open alerts",
-    "red": "Mocat HomeSOC: high-severity alert",
+    "green": "MoCat HomeSOC: all clear",
+    "yellow": "MoCat HomeSOC: open alerts",
+    "red": "MoCat HomeSOC: high-severity alert",
 }
 OFFLINE_SUFFIX = " (agent offline)"
 

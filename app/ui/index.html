@@ -6,44 +6,21 @@
   <!-- Everything is local; the only server this page may talk to is the agent on 127.0.0.1:8765. -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src http://127.0.0.1:8765 ws://127.0.0.1:8765; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Mocat HomeSOC</title>
+  <title>MoCat HomeSOC</title>
   <link rel="icon" href="logo.png">
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
 </head>
 <body>
-  <!-- Icon rail (black, like the logo's shield) -->
-  <div class="rail-wrap">
-    <nav class="rail" aria-label="Screens">
-      <div class="rail-logo">
-        <img src="logo.png" alt="Mocat HomeSOC" width="40" height="40">
-        <span id="shield" class="shield shield-off" title="Protection status"></span>
-      </div>
-      <span class="rail-sep"></span>
-      <button class="nav-item rail-btn active" data-screen="home" title="Dashboard" aria-label="Dashboard">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1z"/></svg>
-      </button>
-      <button class="nav-item rail-btn" data-screen="apps" title="Apps" aria-label="Apps">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.4 2.3 3.5 5 3.5 8s-1.1 5.7-3.5 8c-2.4-2.3-3.5-5-3.5-8S9.6 6.3 12 4z"/></svg>
-      </button>
-      <button class="nav-item rail-btn" data-screen="alerts" title="Alerts" aria-label="Alerts">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/></svg>
-        <span id="rail-alert-dot" class="rail-dot" hidden></span>
-      </button>
-      <span class="rail-fill"></span>
-      <span class="rail-label">MOCAT HOMESOC</span>
-    </nav>
-    <button class="nav-item rail-gear" data-screen="settings" title="Settings" aria-label="Settings">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6"/></svg>
-    </button>
-  </div>
-
   <!-- Side panel -->
   <aside class="panel">
     <div class="brand">
-      <img class="brand-logo" src="logo.png" alt="" width="44" height="44">
+      <div class="brand-mark">
+        <img class="brand-logo" src="logo.png" alt="MoCat HomeSOC" width="44" height="44">
+        <span id="shield" class="shield shield-off" title="Protection status"></span>
+      </div>
       <div>
-        <div class="brand-name">Mocat HomeSOC</div>
+        <div class="brand-name">MoCat HomeSOC</div>
         <div id="conn" class="conn conn-off">Agent offline — reconnecting…</div>
       </div>
     </div>
@@ -75,7 +52,7 @@
 
     <section id="screen-home" class="screen">
       <h1>Dashboard</h1>
-      <p class="subtitle">Everything Mocat is watching on this PC.</p>
+      <p class="subtitle">Everything MoCat is watching on this PC.</p>
       <div id="status-tiles" class="tiles"></div>
       <div class="section-head">
         <h2>Recent alerts</h2>
@@ -98,7 +75,7 @@
 
     <section id="screen-settings" class="screen" hidden>
       <h1>Settings</h1>
-      <p class="subtitle">How Mocat responds to threats.</p>
+      <p class="subtitle">How MoCat responds to threats.</p>
       <div class="card">
         <h2>Protection mode</h2>
         <fieldset class="modes">
@@ -113,7 +90,7 @@
       </div>
       <div class="card">
         <h2>Undo everything</h2>
-        <p class="hint">Removes every firewall rule Mocat has added (group "HomeSOC").</p>
+        <p class="hint">Removes every firewall rule MoCat has added (group "HomeSOC").</p>
         <button id="undo-all" class="btn btn-danger">Undo all</button>
       </div>
     </section>

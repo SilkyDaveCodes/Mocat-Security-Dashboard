@@ -35,8 +35,8 @@ from app.main import WS_URL, validate_api_url
 logger = logging.getLogger(__name__)
 
 TOAST_SEVERITIES = frozenset({"high", "critical"})
-APP_ID = "Mocat HomeSOC"
-DEFAULT_TITLE = "Mocat HomeSOC alert"
+APP_ID = "MoCat HomeSOC"
+DEFAULT_TITLE = "MoCat HomeSOC alert"
 ELLIPSIS = "…"
 
 DEFAULT_TEXT_CHARS = 120  # used when config.yaml lacks app.toast_text_chars

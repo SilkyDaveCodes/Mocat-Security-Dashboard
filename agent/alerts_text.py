@@ -157,13 +157,13 @@ def _details(signals: Sequence[Signal]) -> str:
 def _what_happened(process: str, signals: Sequence[Signal]) -> str:
     groups = _group_by_detector(signals)
     if not groups:
-        return f"Mocat noticed suspicious network activity from {process}."
+        return f"MoCat noticed suspicious network activity from {process}."
     if set(groups) == {"flow_model"}:
         # Inbound only: the attacker is the remote computer, and ``process`` is just the local
         # listener (often "unknown"), so it must not be called malware.
-        parts = ["Mocat noticed an attack on your PC from another computer on the network."]
+        parts = ["MoCat noticed an attack on your PC from another computer on the network."]
     else:
-        parts = [f"Mocat noticed {process} behaving like malware."]
+        parts = [f"MoCat noticed {process} behaving like malware."]
     parts += [_happened_sentence(det, sigs) for det, sigs in groups.items()]
     parts.append(_details(signals))
     ids = mitre_ids(signals)
@@ -207,7 +207,7 @@ def _did_sentence(action: Action, process: str) -> str:
     elif kind == "kill_process":
         done = f"We stopped {_exe_name(action.target, process)} from running"
     elif kind == "undo":
-        return f"We removed an earlier Mocat block ({action.target}), so it is allowed again."
+        return f"We removed an earlier MoCat block ({action.target}), so it is allowed again."
     else:
         logger.warning("No alert template for action kind %r; using generic text", kind)
         done = f"We took a protective action ({kind}) on {action.target or process}"
@@ -218,16 +218,16 @@ def _nothing_blocked(process: str, mode: str, allowlisted: bool) -> str:
     if allowlisted:
         return (
             f"Nothing was blocked, because {process} is on your trusted apps list. "
-            "Mocat only warns you about trusted apps and never blocks them on its own."
+            "MoCat only warns you about trusted apps and never blocks them on its own."
         )
     if mode == "notify":
         return (
-            "Nothing was blocked, because Mocat is in Notify mode (it warns you but does "
+            "Nothing was blocked, because MoCat is in Notify mode (it warns you but does "
             "not block). Turn on Auto-protect in Settings to block threats like this "
             "automatically."
         )
     if mode == "off":
-        return "Nothing was blocked, because Mocat protection is turned off."
+        return "Nothing was blocked, because MoCat protection is turned off."
     return (
         "Nothing was blocked, because we were not sure enough that this is a real threat. "
         "We are leaving the decision to you."

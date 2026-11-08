@@ -1,4 +1,4 @@
-/* Mocat HomeSOC UI (CLAUDE.md §6.6, §6.7).
+/* MoCat HomeSOC UI (CLAUDE.md §6.6, §6.7).
  *
  * Talks only to the local agent at API_BASE (127.0.0.1:8765). No external resources.
  *
@@ -103,7 +103,7 @@ async function apiRequest(path, options, fetchFn) {
   try {
     resp = await doFetch(apiUrl(path), init);
   } catch (err) {
-    throw new ApiError(0, "The Mocat agent is not reachable. Is it running?");
+    throw new ApiError(0, "The MoCat agent is not reachable. Is it running?");
   }
   let data = null;
   try {
@@ -273,7 +273,7 @@ function renderAlertCard(alert, actionsById) {
 
 function renderAlertList(alerts, actionsById) {
   if (!alerts || !alerts.length) {
-    return `<p class="empty">No alerts. Mocat hasn't seen anything suspicious.</p>`;
+    return `<p class="empty">No alerts. MoCat hasn't seen anything suspicious.</p>`;
   }
   return alerts.map((a) => renderAlertCard(a, actionsById)).join("\n");
 }
@@ -440,7 +440,6 @@ function startUi(doc, win) {
       shield.className = `shield ${!state.connected ? "shield-off" : open.length ? "shield-red" : state.alerts.length ? "shield-yellow" : "shield-green"}`;
       $("#home-alerts").innerHTML = renderAlertList(state.alerts.slice(0, 3), state.actionsById);
       $("#nav-alert-count").textContent = state.alerts.length ? String(state.alerts.length) : "";
-      $("#rail-alert-dot").hidden = open.length === 0;
       $("#side-status").innerHTML = renderSideStatus(state.status);
     }
     if (want.has("alerts")) {
@@ -547,14 +546,14 @@ function startUi(doc, win) {
   }
 
   async function onUndoAll() {
-    if (!win.confirm("Remove every firewall rule Mocat has added?")) return;
+    if (!win.confirm("Remove every firewall rule MoCat has added?")) return;
     try {
       const res = await undoAll();
       for (const a of Object.values(state.actionsById)) {
         if (a.kind !== "undo") state.actionsById[a.id] = { ...a, undone: true };
       }
       applyWsMessage(state, res.undo);
-      notice(`Removed Mocat's firewall rules (${res.undone} action(s) undone).`, "ok");
+      notice(`Removed MoCat's firewall rules (${res.undone} action(s) undone).`, "ok");
     } catch (err) {
       showError(err);
     }

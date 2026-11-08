@@ -104,7 +104,7 @@ def test_nothing_blocked_explains_off_mode() -> None:
     [
         (Action(kind="block_ip", target=C2), f"We blocked all traffic to and from {C2}"),
         (Action(kind="kill_process", target=EXE), "We stopped FreeGameCheats.exe from running"),
-        (Action(kind="undo", target=C2), f"We removed an earlier Mocat block ({C2})"),
+        (Action(kind="undo", target=C2), f"We removed an earlier MoCat block ({C2})"),
     ],
 )
 def test_every_action_kind_has_text(action: Action, expected: str) -> None:
@@ -170,13 +170,13 @@ def test_inbound_attack_does_not_call_the_local_listener_malware(process: str) -
     t = build_alert_text(process, [sig], mode="auto")
     assert "behaving like malware" not in t.what_happened
     assert f"noticed {process}" not in t.what_happened
-    assert t.what_happened.startswith("Mocat noticed an attack on your PC from another computer")
+    assert t.what_happened.startswith("MoCat noticed an attack on your PC from another computer")
     assert "192.168.56.20" in t.what_happened and "port scan" in t.what_happened
 
 
 def test_mixed_inbound_and_local_signals_still_name_the_process() -> None:
     sigs = [Signal(detector="flow_model", target="192.168.56.20", mitre="T1046"), _beacon()]
-    assert f"Mocat noticed {PROC} behaving like malware." in build_alert_text(
+    assert f"MoCat noticed {PROC} behaving like malware." in build_alert_text(
         PROC, sigs).what_happened
 
 

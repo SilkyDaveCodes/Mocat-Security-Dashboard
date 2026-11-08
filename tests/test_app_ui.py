@@ -184,7 +184,7 @@ def test_create_window_loads_index_html() -> None:
     assert len(fake.windows) == 1
     created = fake.windows[0]
     assert window is created["window"]
-    assert created["title"] == "Mocat HomeSOC"
+    assert created["title"] == "MoCat HomeSOC"
     url = Path(created["url"])
     assert url.is_absolute()
     assert url == INDEX_HTML.resolve()

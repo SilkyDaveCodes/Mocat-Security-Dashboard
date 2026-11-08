@@ -1,4 +1,4 @@
-/* Mocat HomeSOC theme: soft grey frosted panels, a black icon rail and the logo's blue as the
+/* MoCat HomeSOC theme: soft grey frosted panels, the MoCat logo, and the logo's blue as the
    accent. Local only: system fonts, no external resources. */
 :root {
   --bg-1: #d7d8db;
@@ -12,8 +12,6 @@
   --ink: #17181c;
   --text: #2a2c33;
   --muted: #7b7e88;
-  --rail: #121316;
-  --rail-2: #26282d;
   --accent: #5170ff;          /* the cat in the logo */
   --accent-soft: rgba(81, 112, 255, 0.12);
   --ok: #2f9e6b;
@@ -41,45 +39,16 @@ h3, h4, h6 { margin: 0; }
 svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7;
   stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 
-/* ---------------------------------------------------------------- icon rail */
-.rail-wrap { display: flex; flex-direction: column; gap: 12px; flex-shrink: 0; }
-.rail {
-  width: 68px; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 10px;
-  padding: 14px 0; border-radius: 22px; background: var(--rail);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
-}
-.rail-logo { position: relative; width: 44px; height: 44px; display: grid; place-items: center; }
-.rail-logo img { width: 40px; height: 40px; }
+/* ---------------------------------------------------------------- side panel */
+.brand-mark { position: relative; width: 44px; height: 44px; flex-shrink: 0; }
 .shield {
-  position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; border-radius: 50%;
-  border: 2px solid var(--rail); background: var(--muted);
+  position: absolute; right: -3px; bottom: -1px; width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid var(--panel-solid); background: #8a8d96;
 }
-.shield-green { background: #3ddc84; }
+.shield-green { background: var(--ok); }
 .shield-yellow { background: #ffc53d; }
 .shield-red { background: var(--crit); }
-.shield-off { background: #6c6f78; }
-.rail-sep { width: 28px; height: 1px; background: var(--rail-2); margin: 4px 0; }
-.rail-btn, .rail-gear {
-  position: relative; width: 46px; height: 46px; display: grid; place-items: center; cursor: pointer;
-  border: 0; border-radius: 14px; background: transparent; color: #c9cbd1;
-}
-.rail-btn:hover { background: var(--rail-2); color: #fff; }
-.rail-btn.active { background: var(--rail-2); color: #fff; box-shadow: inset 0 0 0 1px rgba(81, 112, 255, 0.55); }
-.rail-btn.active svg { stroke: var(--accent); }
-.rail-dot { position: absolute; top: 10px; right: 11px; width: 8px; height: 8px; border-radius: 50%; background: var(--crit); }
-.rail-fill { flex: 1; }
-.rail-label {
-  writing-mode: vertical-rl; transform: rotate(180deg); font-size: 10px; letter-spacing: 2.5px;
-  color: #4a4d55; font-family: Consolas, monospace; padding-bottom: 6px;
-}
-.rail-gear {
-  width: 68px; height: 68px; border-radius: 22px; background: var(--rail); color: #c9cbd1;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
-}
-.rail-gear:hover, .rail-gear.active { color: #fff; }
-.rail-gear.active svg { stroke: var(--accent); }
-
-/* ---------------------------------------------------------------- side panel */
+.shield-off { background: #8a8d96; }
 .panel {
   width: 250px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px;
   padding: 18px 14px; border-radius: 24px; background: var(--panel);

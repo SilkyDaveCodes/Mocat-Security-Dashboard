@@ -78,7 +78,7 @@ def test_high_and_critical_each_toast_once_low_and_medium_never(
     for kwargs in fake_winotify.shown:
         assert kwargs["title"] == "FreeGameCheats.exe talks to a C2 server"
         assert kwargs["msg"] == expected_text
-        assert kwargs["app_id"] == "Mocat HomeSOC"
+        assert kwargs["app_id"] == "MoCat HomeSOC"
 
 
 def test_non_alert_messages_never_toast(fake_winotify: FakeWinotify) -> None:
