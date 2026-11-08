@@ -502,6 +502,9 @@ py -3.12 -m venv .venv
 .venv\Scripts\python -m lab.fp_recording --minutes 60
 #   replayed by tests/test_fp_replay.py; see docs/fp-test.md
 
+# inbound attack test (lab VM portscan/bruteforce -> block IP -> undo): docs/inbound-test.md
+#   automated twin: tests/test_inbound_e2e.py
+
 # emergency: remove every HomeSOC firewall rule
 Remove-NetFirewallRule -Group "HomeSOC"
 

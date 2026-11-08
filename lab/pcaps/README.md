@@ -94,10 +94,34 @@ sudo tcpdump -i <IFACE> host 192.168.56.20 -w lab/pcaps/dos.pcapng
 HOMESOC_LAB=1 python3 -m lab.traffic.dos --target 192.168.56.20 --port 8080
 ```
 
+## Windows-target captures  →  `portscan_win.pcapng`, `bruteforce_win.pcapng`
+
+The captures above target the Ubuntu VM, which answers closed ports with a RST. Windows Firewall
+drops them silently, so a scan of the Windows VM is one SYN per port with no reply, and a model
+trained only on the Ubuntu captures calls it benign (found in #61). Capture the attacks again
+**on the Windows VM** (admin PowerShell, repo root), with the generators run on the lab VM.
+`<WIN_IP>` is the Windows VM's host-only address (`Get-NetIPAddress -AddressFamily IPv4`; it was
+`192.168.56.101` in #61).
+
+```powershell
+# portscan: 20 rounds of 15 ports (~300 flows)
+& "C:\Program Files\Wireshark\dumpcap.exe" -i <IFACE> -f "host 192.168.56.20" -w lab\pcaps\portscan_win.pcapng
+#   lab VM:  for i in $(seq 20); do HOMESOC_LAB=1 python3 -m lab.traffic.portscan --target <WIN_IP>; done
+#   then Ctrl-C the capture
+
+# bruteforce: needs a listener on the Windows VM, or every attempt is a dropped SYN (= a scan)
+.venv\Scripts\python lab\c2_server.py --host <WIN_IP> --port 8080       # normal window, keep running
+netstat -ano | findstr ":8080"                                          # must show LISTENING
+& "C:\Program Files\Wireshark\dumpcap.exe" -i <IFACE> -f "host 192.168.56.20" -w lab\pcaps\bruteforce_win.pcapng
+#   lab VM:  for i in $(seq 5); do HOMESOC_LAB=1 python3 -m lab.traffic.bruteforce --target <WIN_IP> --port 8080; done
+#   the lab VM must print "auth attempt ... sent to", not "could not connect"; then Ctrl-C the capture
+```
+
 ## After capturing
 
-All four files (`benign.pcapng`, `portscan.pcapng`, `bruteforce.pcapng`, `dos.pcapng`) should
-now exist in this directory and match the entries in `labels.yaml`. `models/train_flow.py`
+All six files (`benign.pcapng`, `portscan.pcapng`, `bruteforce.pcapng`, `dos.pcapng`,
+`portscan_win.pcapng`, `bruteforce_win.pcapng`) should now exist in this directory and match the
+entries in `labels.yaml`. `models/train_flow.py`
 reads `labels.yaml`, loads each listed pcap, extracts flow features, and trains
 `models/flow.joblib` using the labels as the target. Do not commit the `.pcapng` files.
 

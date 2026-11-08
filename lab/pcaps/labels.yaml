@@ -24,3 +24,9 @@ pcaps:
     label: bruteforce
   - file: dos.pcapng
     label: dos
+  # Captured on the Windows VM while it was the target (#61): Windows Firewall drops closed-port
+  # SYNs silently (no RST), so a scan of Windows looks different from a scan of the Ubuntu VM.
+  - file: portscan_win.pcapng
+    label: portscan
+  - file: bruteforce_win.pcapng
+    label: bruteforce

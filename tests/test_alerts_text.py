@@ -162,6 +162,24 @@ def test_flow_model_names_each_attack_kind(mitre: str, phrase: str) -> None:
     assert "block the attacking address" in t.what_you_should_do
 
 
+@pytest.mark.parametrize("process", ["unknown", "svchost.exe", "System"])
+def test_inbound_attack_does_not_call_the_local_listener_malware(process: str) -> None:
+    # #61: an inbound port scan's process is the local listener (or "unknown"), the victim.
+    sig = Signal(detector="flow_model", target="192.168.56.20", mitre="T1046",
+                 reasons=["port scan from 192.168.56.20 (p=0.97, 3 flows in 60 s)"])
+    t = build_alert_text(process, [sig], mode="auto")
+    assert "behaving like malware" not in t.what_happened
+    assert f"noticed {process}" not in t.what_happened
+    assert t.what_happened.startswith("HomeSOC noticed an attack on your PC from another computer")
+    assert "192.168.56.20" in t.what_happened and "port scan" in t.what_happened
+
+
+def test_mixed_inbound_and_local_signals_still_name_the_process() -> None:
+    sigs = [Signal(detector="flow_model", target="192.168.56.20", mitre="T1046"), _beacon()]
+    assert f"HomeSOC noticed {PROC} behaving like malware." in build_alert_text(
+        PROC, sigs).what_happened
+
+
 def test_unknown_detector_falls_back_to_generic_text(caplog: pytest.LogCaptureFixture) -> None:
     weird = Signal(target="198.51.100.7", reasons=["odd thing"], mitre="T9999")
     weird.detector = "future_detector"  # type: ignore[assignment]

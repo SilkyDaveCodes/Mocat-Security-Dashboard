@@ -56,6 +56,11 @@ pipeline in `auto` mode and fails on any medium-or-higher alert or firewall acti
 recording lands, the only fixture is the synthetic `normal_use_synthetic.jsonl`
 (`python -m lab.synth_normal_use` regenerates it). Details: `docs/fp-test.md`.
 
+## Inbound attack test (portscan / bruteforce -> block IP)
+
+Live runbook for the two lab VMs (portscan -> T1046 + IP block, bruteforce -> T1110, undo):
+`docs/inbound-test.md`. Its automated twin is `tests/test_inbound_e2e.py`.
+
 ## Building the installer (HomeSOC-Setup.exe)
 
 On the Windows build VM, from the repo root, with the models already trained (§8):

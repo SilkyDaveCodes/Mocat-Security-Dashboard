@@ -158,7 +158,12 @@ def _what_happened(process: str, signals: Sequence[Signal]) -> str:
     groups = _group_by_detector(signals)
     if not groups:
         return f"HomeSOC noticed suspicious network activity from {process}."
-    parts = [f"HomeSOC noticed {process} behaving like malware."]
+    if set(groups) == {"flow_model"}:
+        # Inbound only: the attacker is the remote computer, and ``process`` is just the local
+        # listener (often "unknown"), so it must not be called malware.
+        parts = ["HomeSOC noticed an attack on your PC from another computer on the network."]
+    else:
+        parts = [f"HomeSOC noticed {process} behaving like malware."]
     parts += [_happened_sentence(det, sigs) for det, sigs in groups.items()]
     parts.append(_details(signals))
     ids = mitre_ids(signals)
