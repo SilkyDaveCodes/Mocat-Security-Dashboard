@@ -32,6 +32,7 @@ from agent.events import Signal
 from agent.main import NamedDetector, run_agent
 from agent.scoring import Scorer
 from agent.store import Store
+from tests.api_helpers import LOCAL_WS_URL, local_client
 from tests.test_api import LAB_C2, PC_IP, PROC, FakeClock, flow, make_action, make_alert
 
 RECV_TIMEOUT_S = 5.0
@@ -87,7 +88,7 @@ def client(cfg: dict[str, Any], store: Store, clock: FakeClock, bus: Bus) -> Ite
     app = create_app(store, scorer, FlowTracker(600.0, clock), firewall_fns={},
                      allowlist=Allowlist(frozenset()), clock=clock, bus=bus,
                      ws_flow_rate_per_s=RATE)
-    with TestClient(app) as c:  # one portal / event loop shared by every websocket
+    with local_client(app) as c:  # one portal / event loop shared by every websocket
         yield c
 
 
@@ -95,7 +96,7 @@ def client(cfg: dict[str, Any], store: Store, clock: FakeClock, bus: Bus) -> Ite
 
 
 def test_published_alert_reaches_client_as_json(client: TestClient, bus: Bus) -> None:
-    with client.websocket_connect("/ws") as ws:
+    with client.websocket_connect(LOCAL_WS_URL) as ws:
         alert = make_alert("al-ws", action_ids=["a1"])
         bus.publish_threadsafe(alert)
         msg = recv(ws)
@@ -110,7 +111,7 @@ def test_published_alert_reaches_client_as_json(client: TestClient, bus: Bus) ->
 
 
 def test_published_action_reaches_client(client: TestClient, bus: Bus) -> None:
-    with client.websocket_connect("/ws") as ws:
+    with client.websocket_connect(LOCAL_WS_URL) as ws:
         bus.publish_threadsafe(make_action("act-ws"))
         msg = recv(ws)
     assert msg["type"] == "action"
@@ -122,7 +123,7 @@ def test_published_action_reaches_client(client: TestClient, bus: Bus) -> None:
 
 
 def test_signals_are_not_sent(client: TestClient, bus: Bus) -> None:
-    with client.websocket_connect("/ws") as ws:
+    with client.websocket_connect(LOCAL_WS_URL) as ws:
         bus.publish_threadsafe(Signal(detector="dga", process=PROC, target="x.example"))
         bus.publish_threadsafe(make_alert("marker"))
         messages = recv_until_alert(ws, "marker")
@@ -135,7 +136,7 @@ def test_signals_are_not_sent(client: TestClient, bus: Bus) -> None:
 def test_100_flows_in_one_second_give_at_most_5_flow_messages(
     client: TestClient, bus: Bus, clock: FakeClock
 ) -> None:
-    with client.websocket_connect("/ws") as ws:
+    with client.websocket_connect(LOCAL_WS_URL) as ws:
         for i in range(100):
             clock.now = 1000.0 + i * 0.009  # all 100 inside one second (1000.0 .. 1000.891)
             bus.publish_threadsafe(flow(src_port=40000 + i))
@@ -159,7 +160,7 @@ def test_100_flows_in_one_second_give_at_most_5_flow_messages(
 
 
 def test_flow_message_is_a_small_summary(client: TestClient, bus: Bus) -> None:
-    with client.websocket_connect("/ws") as ws:
+    with client.websocket_connect(LOCAL_WS_URL) as ws:
         bus.publish_threadsafe(flow(hostname="c2.lab", features={"big": list(range(100))},
                                     ts_ms=123, bytes_out=500, bytes_in=40))
         msg = recv(ws)
@@ -171,7 +172,7 @@ def test_flow_message_is_a_small_summary(client: TestClient, bus: Bus) -> None:
 
 
 def test_throttle_is_per_client(client: TestClient, bus: Bus) -> None:
-    with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
+    with client.websocket_connect(LOCAL_WS_URL) as a, client.websocket_connect(LOCAL_WS_URL) as b:
         for _ in range(20):
             bus.publish_threadsafe(flow())
         bus.publish_threadsafe(make_alert("end"))
@@ -207,8 +208,8 @@ def test_rate_comes_from_config(cfg: dict[str, Any]) -> None:
 def test_disconnecting_client_does_not_break_delivery_to_others(
     client: TestClient, bus: Bus
 ) -> None:
-    with client.websocket_connect("/ws") as stays:
-        with client.websocket_connect("/ws") as leaves:
+    with client.websocket_connect(LOCAL_WS_URL) as stays:
+        with client.websocket_connect(LOCAL_WS_URL) as leaves:
             assert len(bus.subscribers) == 2
             bus.publish_threadsafe(make_alert("both"))
             assert recv(leaves)["id"] == "both"
@@ -221,7 +222,7 @@ def test_disconnecting_client_does_not_break_delivery_to_others(
         assert recv(stays)["id"] == "after"
         assert recv(stays)["id"] == "act-after"
 
-        with client.websocket_connect("/ws") as joins:  # a new client still works too
+        with client.websocket_connect(LOCAL_WS_URL) as joins:  # a new client still works too
             bus.publish_threadsafe(make_alert("late"))
             assert recv(joins)["id"] == "late"
             assert recv(stays)["id"] == "late"
@@ -232,8 +233,8 @@ def test_ws_without_bus_closes(cfg: dict[str, Any], store: Store) -> None:
     scorer = Scorer(cfg, Allowlist(frozenset()), mode="notify")
     app = create_app(store, scorer, FlowTracker(600.0), firewall_fns={},
                      allowlist=Allowlist(frozenset()))
-    with TestClient(app) as c, pytest.raises(WebSocketDisconnect) as exc:
-        with c.websocket_connect("/ws") as ws:
+    with local_client(app) as c, pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect(LOCAL_WS_URL) as ws:
             ws.receive_json()
     assert exc.value.code == api.WS_CLOSE_UNAVAILABLE
 
@@ -252,9 +253,9 @@ def test_bus_on_another_loop_thread(cfg: dict[str, Any], store: Store, clock: Fa
         app = create_app(store, scorer, FlowTracker(600.0, clock), firewall_fns={},
                          allowlist=Allowlist(frozenset()), clock=clock, bus=bus,
                          ws_flow_rate_per_s=RATE)
-        with TestClient(app) as c:
-            with c.websocket_connect("/ws") as stays:
-                with c.websocket_connect("/ws") as leaves:
+        with local_client(app) as c:
+            with c.websocket_connect(LOCAL_WS_URL) as stays:
+                with c.websocket_connect(LOCAL_WS_URL) as leaves:
                     for _ in range(10):
                         bus.publish_threadsafe(flow())
                     bus.publish_threadsafe(make_alert("x1"))
@@ -291,7 +292,7 @@ def test_run_agent_gives_ws_clients_the_agents_bus(cfg: dict[str, Any], store: S
 
     def ws_client(app: Any) -> None:
         try:
-            with TestClient(app) as c, c.websocket_connect("/ws") as ws:
+            with local_client(app) as c, c.websocket_connect(LOCAL_WS_URL) as ws:
                 connected.set()
                 received.extend(recv(ws) for _ in nflows)
         except BaseException as exc:

@@ -124,8 +124,14 @@ evidence:                      # rolling capture + per-alert pcap export (§6.8,
   export_timeout_s: 60         # give up on one tshark / mergecap run after this long
   stop_timeout_s: 5            # on shutdown: terminate dumpcap, wait this long, then kill
 
+data_acl:                      # installed agent only: lock %PROGRAMDATA%\HomeSOC (#72, agent/data_acl.py)
+  # Every start, the installed agent sets the folder to SYSTEM + Administrators only (Users may
+  # read data\evidence). From source nothing is changed (the data folder is the repo).
+  timeout_s: 30                # give up on one icacls run after this long
+  refuse_on_failure: false     # true: the agent exits if the folder can't be locked; false: log an ERROR, run on
+
 app:
-  tray_refresh_s: 5            # the tray re-reads GET /alerts, /actions, /status this often
+  tray_refresh_s: 5           # the tray re-reads GET /alerts, /actions, /status this often
   http_timeout_s: 5            # give up on one app -> agent HTTP call after this long
   toast_text_chars: 120        # a toast shows this much of what_you_should_do (app/notify.py)
   toast_dedupe_max: 1000       # alert ids remembered so the same alert never toasts twice

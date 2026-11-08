@@ -110,12 +110,30 @@ if (-not $iscc) { throw "ISCC.exe not found: install Inno Setup 6 (winget instal
   if Npcap is missing (install Wireshark first).
 - **Where the data goes:** Program Files is read-only, so everything writable (`config.yaml`,
   `data/homesoc.db`, `data/cache/`, `data/evidence/`, the ring pcap, `agent.log`) lives in
-  `%PROGRAMDATA%\HomeSOC` (usually `C:\ProgramData\HomeSOC`), which both the agent and the app
-  can read. On every start the agent copies the bundled `config.yaml` and data lists there if
-  they are missing (your edits are kept) and refreshes the models. **Edit
-  `C:\ProgramData\HomeSOC\config.yaml`** to set `capture.interface`, then restart the agent (admin PowerShell:
-  `Stop-ScheduledTask "HomeSOC Agent"; Start-ScheduledTask "HomeSOC Agent"`).
+  `%PROGRAMDATA%\HomeSOC` (usually `C:\ProgramData\HomeSOC`). On every start the agent copies
+  the bundled `config.yaml` and data lists there if they are missing (your edits are kept) and
+  refreshes the models. **Edit `C:\ProgramData\HomeSOC\config.yaml` from an admin editor** (e.g.
+  `notepad` started from an admin PowerShell: `Start-Process notepad
+  C:\ProgramData\HomeSOC\config.yaml -Verb RunAs`) to set `capture.interface`, then restart the
+  agent (admin PowerShell: `Stop-ScheduledTask "HomeSOC Agent"; Start-ScheduledTask "HomeSOC Agent"`).
   Running from source is unchanged: every path is still relative to the repo.
+- **Who can read the data (#72):** the folder holds raw packets (`data\ring_*.pcapng`), the
+  alert database and the log, so setup (`[Run]` in `homesoc.iss`) and the agent on every start
+  (`agent/data_acl.py`) lock it: no inheritance from `C:\ProgramData`, SYSTEM and Administrators
+  full control (owner Administrators), and no access for Users except **read on
+  `data\evidence`**, so "Export evidence" → Wireshark works without admin (open the path the app
+  shows; Explorer can't browse to it). The app reads the bundled `config.yaml` from Program
+  Files. Well-known SIDs are used, so it works on any Windows language. If locking fails, the
+  agent logs an ERROR and runs on (`data_acl.refuse_on_failure: true` makes it exit instead). To
+  re-apply it by hand (admin PowerShell; the same commands, in this order):
+
+  ```powershell
+  $d = "C:\ProgramData\HomeSOC"
+  icacls $d /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /Q
+  icacls $d /setowner '*S-1-5-32-544' /T /Q
+  icacls $d /remove:g '*S-1-5-32-545' '*S-1-5-11' '*S-1-1-0' '*S-1-3-0' /T /Q
+  icacls "$d\data\evidence" /grant:r '*S-1-5-32-545:(OI)(CI)RX' /Q
+  ```
 - **Uninstall** deletes the scheduled task, stops both programs and runs
   `Remove-NetFirewallRule -Group 'HomeSOC'`: only HomeSOC's own rules are removed, no other
   firewall or Defender setting is touched. `C:\ProgramData\HomeSOC` (alerts, settings) is kept;
@@ -143,7 +161,17 @@ machine. Neither the installer nor HomeSOC itself ever changes Defender settings
 2. Run `HomeSOC-Setup.exe`, accept the UAC prompt, leave "Open MoCat HomeSOC" ticked, finish.
 3. Within a few seconds the tray shows the MoCat logo with a green dot and the window opens; the Home
    screen shows the agent connected. `Get-ScheduledTask "HomeSOC Agent"` shows it Running.
-4. Uninstall (Settings > Apps): `Get-NetFirewallRule -Group 'HomeSOC'` then finds nothing and
+4. Data folder locked (#72). In an admin PowerShell, `icacls C:\ProgramData\HomeSOC /T` shows
+   only `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators` (full, `(F)`) everywhere, no
+   `(I)` entries on `C:\ProgramData\HomeSOC` itself, and `BUILTIN\Users` only on `data\evidence`
+   and the files in it, as `(RX)` (read). Then in a normal (non-admin) PowerShell each of these
+   fails with "Access is denied":
+   `Get-Content C:\ProgramData\HomeSOC\agent.log -TotalCount 1`,
+   `Get-Content C:\ProgramData\HomeSOC\data\homesoc.db -TotalCount 1`,
+   `Get-ChildItem C:\ProgramData\HomeSOC\data\ring_*.pcapng`,
+   `New-Item C:\ProgramData\HomeSOC\x.txt`. Run the fake malware, export the alert's evidence
+   and open the path the app shows in Wireshark as the normal user: it opens.
+5. Uninstall (Settings > Apps): `Get-NetFirewallRule -Group 'HomeSOC'` then finds nothing and
    every other firewall rule is unchanged.
 
 ## Safety

@@ -20,6 +20,14 @@ CORS
     The app's window (pywebview, ``http://127.0.0.1:<port>/``) is another origin, so responses
     carry CORS headers for loopback ``http`` origins only (:data:`CORS_ORIGIN_REGEX`).
 
+Locked to this PC (#71)
+    * ``Host`` must be ``127.0.0.1`` or ``localhost`` (any port), else 400 on every route and
+      the WebSocket (DNS rebinding).
+    * ``WS /ws`` refuses the handshake (close 1008) when an ``Origin`` is present and is not a
+      loopback ``http`` origin (``null`` included); no ``Origin`` (non-browser clients) is fine.
+    * Every ``POST`` needs ``X-MoCat: 1`` (:data:`CLIENT_HEADER`), else 403 before the route
+      runs. The custom header forces a CORS preflight, which foreign origins fail.
+
 Error codes
     404 unknown alert / action id. 409 the request conflicts with the current state (action
     already undone or not undoable, alert without a known exe path, app on the allowlist,
@@ -60,6 +68,7 @@ import asyncio
 import contextlib
 import itertools
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -71,6 +80,10 @@ from typing import Any, Literal, Protocol
 from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.datastructures import Headers
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from agent import alerts_text, scoring
 from agent import config as config_module
@@ -101,6 +114,17 @@ UNDO_KIND = "undo"
 # origin than the API, so browsers need CORS headers. Only loopback http origins are allowed:
 # a web page from the internet (or a sandboxed "null" origin) never gets them.
 CORS_ORIGIN_REGEX = r"^http://(127\.0\.0\.1|localhost)(:[0-9]{1,5})?$"
+# #71: the only Host header values accepted (any port). Anything else, e.g. a DNS-rebinding
+# name that resolves to 127.0.0.1, gets 400 on every route, the WebSocket included.
+ALLOWED_HOSTS: tuple[str, ...] = (config_module.LOOPBACK_HOST, "localhost")
+# #71: every POST must carry this header with this value, else 403 before the route runs. A
+# custom header makes a browser send a CORS preflight, which foreign origins fail, so a web page
+# can no longer fire a "simple" cross-site POST (e.g. /undo-all). app/tray.py imports these;
+# app/ui/app.js mirrors them (tests/test_app_ui.py keeps them equal).
+CLIENT_HEADER = "X-MoCat"
+CLIENT_HEADER_VALUE = "1"
+CLIENT_HEADER_METHODS = frozenset({"POST"})
+WS_CLOSE_POLICY_VIOLATION = 1008  # /ws refused: foreign Origin
 
 Mode = Literal["off", "notify", "auto"]
 Publish = Callable[[Any], None]
@@ -339,6 +363,41 @@ async def _serve_ws(websocket: WebSocket, feed: _BusFeed, throttle: FlowThrottle
                 await task
 
 
+# --- #71: lock the API to this PC ---------------------------------------------------------
+
+
+def origin_allowed(origin: str | None) -> bool:
+    """True for no ``Origin`` (non-browser clients) or a loopback ``http`` origin.
+
+    ``"null"`` (sandboxed iframe, ``file://``) and every remote origin are refused.
+    """
+    return origin is None or re.fullmatch(CORS_ORIGIN_REGEX, origin) is not None
+
+
+class RequireClientHeader:
+    """ASGI middleware: a POST without ``CLIENT_HEADER: CLIENT_HEADER_VALUE`` gets 403.
+
+    It sits inside :class:`CORSMiddleware`, so a preflight (``OPTIONS``, which never carries
+    custom headers) is answered by CORS first and a 403 still carries the CORS headers for a
+    loopback origin (the UI can read the error). The route never runs for a 403: no body is
+    read, no firewall call, no store write.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("method") in CLIENT_HEADER_METHODS:
+            if Headers(scope=scope).get(CLIENT_HEADER) != CLIENT_HEADER_VALUE:
+                logger.warning("Refused %s %s without the %s header", scope.get("method"),
+                               scope.get("path"), CLIENT_HEADER)
+                response = JSONResponse(
+                    {"detail": f"Missing {CLIENT_HEADER} header"}, status_code=403)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 # --- request bodies -----------------------------------------------------------------------
 
 
@@ -414,12 +473,16 @@ def create_app(
     FlowThrottle(ws_flow_rate_per_s, clock)  # validate the rate now, not on the first connect
     ws_ids = itertools.count(1)
     app = FastAPI(title="HomeSOC agent API")
+    # The last middleware added runs first: TrustedHost -> CORS -> RequireClientHeader -> routes.
+    app.add_middleware(RequireClientHeader)
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=CORS_ORIGIN_REGEX,
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", CLIENT_HEADER],
     )
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(ALLOWED_HOSTS),
+                       www_redirect=False)
 
     def emit(item: Alert | Action) -> None:
         try:
@@ -564,6 +627,13 @@ def create_app(
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
+        # #71: browsers apply no CORS to WebSockets, so check the Origin here. No Origin (the
+        # toast listener's websockets client) is fine; "null" and remote origins are refused.
+        origin = websocket.headers.get("origin")
+        if not origin_allowed(origin):
+            logger.warning("WS /ws refused: foreign Origin %r", origin)
+            await websocket.close(code=WS_CLOSE_POLICY_VIOLATION)
+            return
         if bus is None:
             await websocket.close(code=WS_CLOSE_UNAVAILABLE)
             return

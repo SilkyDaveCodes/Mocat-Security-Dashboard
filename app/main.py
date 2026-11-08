@@ -34,6 +34,11 @@ API_HOST = "127.0.0.1"
 API_PORT = 8765
 API_BASE_URL = "http://127.0.0.1:8765"  # single source of truth; app.js has API_BASE = same
 WS_URL = "ws://127.0.0.1:8765/ws"
+# #71: every POST to the agent carries this header (agent/api.py CLIENT_HEADER /
+# CLIENT_HEADER_VALUE refuses a POST without it with 403). Mirrored here so the app doesn't
+# import the agent's server code; app.js has the same pair; tests keep all three equal.
+API_CLIENT_HEADER = "X-MoCat"
+API_CLIENT_HEADER_VALUE = "1"
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 INDEX_HTML = UI_DIR / "index.html"

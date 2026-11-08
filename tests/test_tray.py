@@ -27,6 +27,7 @@ from agent.store import Store
 from app import main as app_main
 from app import tray as tray_mod
 from app.tray import AgentApi, Tray, build_icon, is_active, poll, tray_settings, tray_state
+from tests.api_helpers import CLIENT_HEADERS
 
 BASE = "http://127.0.0.1:8765"
 EXE = r"C:\Users\demo\Downloads\FreeGameCheats.exe"
@@ -106,6 +107,7 @@ class FakeHttp:
     def __init__(self, alerts: list[dict[str, Any]] | None = None,
                  actions: list[dict[str, Any]] | None = None, mode: str = "notify") -> None:
         self.calls: list[tuple[str, str, Any]] = []
+        self.post_headers: list[dict[str, str] | None] = []  # headers= of each POST, in order
         self.alerts = alerts or []
         self.actions = actions or []
         self.mode = mode
@@ -122,6 +124,7 @@ class FakeHttp:
 
     def post(self, url: str, json: Any = None, **kwargs: Any) -> FakeResponse:
         self.calls.append(("POST", url, json))
+        self.post_headers.append(kwargs.get("headers"))
         if url == f"{BASE}/mode":
             self.mode = json["mode"]
             return FakeResponse({"mode": self.mode})
@@ -180,6 +183,27 @@ def test_every_request_goes_to_the_local_agent_only() -> None:
     assert all(url.startswith(BASE + "/") for _, url, _ in http.calls)
     with pytest.raises(ValueError):
         AgentApi(http, base_url="http://10.0.0.5:8765")
+
+
+def test_every_tray_post_sends_the_client_header() -> None:
+    """#71: the agent answers 403 to a POST without X-MoCat: 1."""
+    http = FakeHttp()
+    tray = Tray(AgentApi(http))
+    tray.set_mode("auto")
+    tray.undo_all()
+    assert len(http.posts()) == 2
+    assert http.post_headers == [{"X-MoCat": "1"}, {"X-MoCat": "1"}]
+    assert (app_main.API_CLIENT_HEADER, app_main.API_CLIENT_HEADER_VALUE) == ("X-MoCat", "1")
+
+
+def test_tray_post_without_header_would_be_refused_by_the_real_api(
+    api_client: TestClient, scorer: Scorer
+) -> None:
+    """Guards the test above: the real API does refuse a header-less POST from this client."""
+    assert api_client.post(f"{BASE}/mode", json={"mode": "auto"}).status_code == 403
+    assert scorer.mode == "notify"
+    assert AgentApi(api_client).set_mode("auto") == "auto"
+    assert scorer.mode == "auto"
 
 
 def test_open_and_quit_call_their_hooks() -> None:
@@ -280,7 +304,7 @@ def test_undoing_the_last_high_alert_turns_red_to_green(api_client: TestClient,
     _save(store, alert("al1", "high", ["a1"]), q("a1"))
     tray = Tray(AgentApi(api_client))
     assert tray.refresh() == "red"
-    assert api_client.post(f"{BASE}/actions/a1/undo").status_code == 200
+    assert api_client.post(f"{BASE}/actions/a1/undo", headers=CLIENT_HEADERS).status_code == 200
     assert tray.refresh() == "green"
 
 
@@ -291,9 +315,9 @@ def test_undoing_the_last_high_alert_leaves_yellow_for_a_medium_one(api_client: 
     _save(store, alert("al3", "medium", ts_ms=10))
     tray = Tray(AgentApi(api_client))
     assert tray.refresh() == "red"
-    api_client.post(f"{BASE}/actions/a2/undo")
+    api_client.post(f"{BASE}/actions/a2/undo", headers=CLIENT_HEADERS)
     assert tray.refresh() == "red"  # the critical one is still quarantined
-    api_client.post(f"{BASE}/actions/a1/undo")
+    api_client.post(f"{BASE}/actions/a1/undo", headers=CLIENT_HEADERS)
     assert tray.refresh() == "yellow"
 
 

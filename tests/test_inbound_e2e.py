@@ -53,6 +53,7 @@ from agent.store import Store
 from lab.traffic import bruteforce as lab_bruteforce
 from lab.traffic import portscan as lab_portscan
 from models import train_flow
+from tests.api_helpers import local_client
 
 ATTACKER = "192.168.56.20"  # the lab VM (lab.traffic._guard.DEFAULT_LAB_TARGET)
 PC_IP = "192.168.56.10"     # the Windows VM running the agent
@@ -248,7 +249,7 @@ class Harness:
         app = api.create_app(self.store, self.pipeline.scorer, tracker,
                              allowlist=api.allowlist_from_config(self.cfg),
                              publish=self.published.append)  # default (real) firewall functions
-        return TestClient(app)
+        return local_client(app)
 
 
 @pytest.fixture

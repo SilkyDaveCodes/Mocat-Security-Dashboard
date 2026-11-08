@@ -282,7 +282,10 @@ def api_client(tmp_path: Path) -> Any:
         scorer = Scorer(cfg, Allowlist(frozenset()), mode="notify")
         app = create_app(store, scorer, FlowTracker(600.0), firewall_fns={},
                          allowlist=Allowlist(frozenset()))
-        yield TestClient(app), scorer
+        yield TestClient(app, base_url="http://127.0.0.1:8765"), scorer
+
+
+CLIENT_HEADERS = {app_main.API_CLIENT_HEADER: app_main.API_CLIENT_HEADER_VALUE}
 
 
 @pytest.mark.parametrize("origin", ["http://127.0.0.1:53211", "http://localhost:8080",
@@ -294,7 +297,8 @@ def test_cors_allows_the_local_window(api_client: Any, origin: str) -> None:
         "Access-Control-Request-Headers": "content-type"})
     assert pre.status_code == 200
     assert pre.headers["access-control-allow-origin"] == origin
-    resp = client.post("/mode", json={"mode": "auto"}, headers={"Origin": origin})
+    resp = client.post("/mode", json={"mode": "auto"},
+                       headers={"Origin": origin, **CLIENT_HEADERS})
     assert resp.status_code == 200
     assert resp.headers["access-control-allow-origin"] == origin
     assert scorer.mode == "auto"
@@ -315,3 +319,57 @@ def test_cors_refuses_other_origins(api_client: Any, origin: str) -> None:
     got = client.get("/status", headers={"Origin": origin})
     assert "access-control-allow-origin" not in got.headers
     assert scorer.mode == "notify"
+
+
+# --- #71: the custom POST header, on every side ------------------------------------------------
+
+
+def test_client_header_is_the_same_in_agent_app_and_js() -> None:
+    from agent import api
+
+    assert (app_main.API_CLIENT_HEADER, app_main.API_CLIENT_HEADER_VALUE) == (
+        api.CLIENT_HEADER, api.CLIENT_HEADER_VALUE)
+    js = APP_JS.read_text(encoding="utf-8")
+    assert f'const CLIENT_HEADER = "{api.CLIENT_HEADER}";' in js
+    assert f'const CLIENT_HEADER_VALUE = "{api.CLIENT_HEADER_VALUE}";' in js
+
+
+@needs_node
+def test_js_post_helpers_send_the_client_header() -> None:
+    out = run_js("every POST helper sends the X-MoCat header").stdout
+    assert "1/1 passed" in out
+
+
+@pytest.mark.parametrize("origin", ["http://127.0.0.1:53211", "http://localhost:8080"])
+def test_preflight_from_the_window_allows_the_client_header(api_client: Any, origin: str) -> None:
+    """The preflight itself carries no X-MoCat, and must still pass and list it as allowed."""
+    client, scorer = api_client
+    pre = client.options("/undo-all", headers={
+        "Origin": origin, "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "x-mocat, content-type"})
+    assert pre.status_code == 200
+    assert pre.headers["access-control-allow-origin"] == origin
+    allowed = {h.strip().lower() for h in pre.headers["access-control-allow-headers"].split(",")}
+    assert "x-mocat" in allowed
+    assert scorer.mode == "notify"
+
+
+def test_post_without_the_header_from_the_window_is_403_with_cors(api_client: Any) -> None:
+    """The window gets a readable 403 (CORS headers present) and nothing changes."""
+    client, scorer = api_client
+    origin = "http://127.0.0.1:53211"
+    resp = client.post("/mode", json={"mode": "auto"}, headers={"Origin": origin})
+    assert resp.status_code == 403
+    assert resp.headers["access-control-allow-origin"] == origin
+    assert scorer.mode == "notify"
+
+
+@pytest.mark.parametrize("origin", ["https://evil.example", "null"])
+def test_preflight_from_a_foreign_origin_fails_even_with_the_header(api_client: Any,
+                                                                    origin: str) -> None:
+    client, _ = api_client
+    pre = client.options("/undo-all", headers={
+        "Origin": origin, "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "x-mocat"})
+    assert pre.status_code == 400
+    assert "access-control-allow-origin" not in pre.headers

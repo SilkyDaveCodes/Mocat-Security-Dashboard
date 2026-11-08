@@ -12,6 +12,10 @@
 // Keep in sync with app/main.py API_BASE_URL / WS_URL (tests/test_app_ui.py checks it).
 const API_BASE = "http://127.0.0.1:8765";
 const WS_URL = "ws://127.0.0.1:8765/ws";
+// #71: the agent refuses a POST without this header (403). Keep in sync with app/main.py
+// API_CLIENT_HEADER / API_CLIENT_HEADER_VALUE (tests/test_app_ui.py checks it).
+const CLIENT_HEADER = "X-MoCat";
+const CLIENT_HEADER_VALUE = "1";
 
 const MODES = ["off", "notify", "auto"];
 const MODE_LABELS = {
@@ -95,6 +99,7 @@ async function apiRequest(path, options, fetchFn) {
   const doFetch = fetchFn || defaultFetch();
   const opts = options || {};
   const init = { method: opts.method || "GET", headers: {} };
+  if (init.method === "POST") init.headers[CLIENT_HEADER] = CLIENT_HEADER_VALUE;
   if (opts.body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(opts.body);
@@ -611,7 +616,7 @@ if (typeof document !== "undefined" && typeof window !== "undefined") {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    API_BASE, WS_URL, MODES, ApiError,
+    API_BASE, WS_URL, CLIENT_HEADER, CLIENT_HEADER_VALUE, MODES, ApiError,
     escapeHtml, formatBytes, formatDuration, apiUrl, apiRequest, errorMessage, nextBackoff,
     getStatus, getApps, getAlerts, undoAction, undoAll, setMode, quarantineAlert, exportEvidence,
     renderAlertCard, renderAlertList, renderAppsTable, renderStatusTiles, renderSideStatus,
