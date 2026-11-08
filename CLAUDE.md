@@ -83,6 +83,7 @@ homesoc/
 │   ├── scoring.py              # risk combination + response policy
 │   ├── alerts_text.py          # plain-English templates + MITRE IDs
 │   ├── evidence.py             # dumpcap ring buffer + per-alert tshark pcap export (§6.8)
+│   ├── data_acl.py             # installed only: lock %PROGRAMDATA%\HomeSOC with icacls (§8, #72)
 │   ├── detectors/
 │   │   ├── intel.py
 │   │   ├── dga.py
@@ -566,6 +567,25 @@ repo). The agent runs as SYSTEM, highest privileges, from the scheduled task `Ho
 (at startup); the app runs as the user (Startup folder). The uninstaller's only firewall command
 is `Remove-NetFirewallRule -Group 'HomeSOC'`.
 
+Data folder ACL (#72): `%PROGRAMDATA%\HomeSOC` holds raw packets, the db and the log, so it is
+locked to SYSTEM + Administrators. `agent/data_acl.py` `acl_commands(data_root, evidence_dir)`
+gives the `icacls` argument lists, in order, with well-known SIDs (`*S-1-5-18` SYSTEM,
+`*S-1-5-32-544` Administrators, `*S-1-5-32-545` Users): (1) `/inheritance:r /grant:r` SYSTEM and
+Administrators `(OI)(CI)F`; (2) `/setowner` Administrators `/T`; (3) `/remove:g` Users,
+Authenticated Users, Everyone, CREATOR OWNER `/T`; (4) Users `(OI)(CI)RX` on `data\evidence`
+only (exported pcaps open in Wireshark without admin, by full path). The installer creates the
+folder, `data` and `data\evidence` in `[Dirs]` (`uninsneveruninstall`) and runs the same four
+`{sys}\icacls.exe` steps in `[Run]` before the agent task starts (`tests/test_installer.py`
+keeps them equal). The agent re-applies them on every start after `config.load()`
+(`agent.main.secure_data_folder`, creating the evidence dir from `evidence.evidence_dir`; an
+evidence dir outside the data root is never made readable), only when frozen and the data root
+is not the bundle (`should_secure`; from source the repo's ACLs are never touched). The runner is
+injected (`run=`, default `subprocess.run`, argument lists, never a shell). A failed call is
+logged as an ERROR and the agent runs on, unless `data_acl.refuse_on_failure` is true (then it
+exits 1); `data_acl.timeout_s` bounds each call. The app (normal user) can't read the data root
+any more, so `config.default_config_path` falls back to the bundled `config.yaml` on an
+access-denied error too. `config.yaml` there is edited from an admin editor.
+
 Lab VM (Ubuntu, host-only network `192.168.56.0/24`, C2 at `192.168.56.20`):
 
 ```bash
@@ -607,8 +627,8 @@ sudo dnsmasq -C lab/dnsmasq.conf    # answers all DNS lookups inside the lab
 - Every detector gets unit tests in `tests/` with synthetic `FlowEvent`s (e.g. a fake beacon every
   5 s ± 0.1 s must trigger; random intervals must not).
 - Keep functions small; one detector per file; detectors must not import each other.
-- Windows-only code (PowerShell, toasts) stays in `agent/response/`, `agent/procinfo.py`, `app/notify.py`
-  so the rest can be tested on any OS.
+- Windows-only code (PowerShell, toasts, icacls) stays in `agent/response/`, `agent/procinfo.py`,
+  `agent/data_acl.py`, `app/notify.py` so the rest can be tested on any OS.
 - When a change affects the demo flow, update the "Demo checklist" below.
 
 ---
@@ -628,7 +648,9 @@ sudo dnsmasq -C lab/dnsmasq.conf    # answers all DNS lookups inside the lab
 
 1. Fresh Windows VM snapshot (Wireshark/Npcap installed) → run `HomeSOC-Setup.exe` → tray
    shield green. Manual check, not automated: steps in README "Manual check on a fresh VM".
-   Set `capture.interface` in `C:\ProgramData\HomeSOC\config.yaml` (not the repo copy).
+   Set `capture.interface` in `C:\ProgramData\HomeSOC\config.yaml` (not the repo copy), from an
+   admin editor (the folder is locked to SYSTEM + Administrators, #72). `icacls
+   C:\ProgramData\HomeSOC /T` shows no `Users` access except read on `data\evidence`.
 2. Apps screen shows Chrome/Discord/Spotify traffic.
 3. Run the packaged `Downloads\FreeGameCheats.exe` (with `HOMESOC_LAB=1`), not
    `python lab\fake_malware\freegamecheats.py`: from source its process is `python.exe`, the

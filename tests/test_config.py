@@ -300,6 +300,23 @@ def test_seed_does_not_overwrite_an_existing_tranco_list(tmp_path: Path) -> None
     assert (data / "data" / "tranco_top100k.txt").read_text(encoding="utf-8") == "user copy\n"
 
 
+def test_default_config_falls_back_to_the_bundle_when_the_data_root_is_locked(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # #72: the app (normal user) can't stat files in the locked %PROGRAMDATA%\HomeSOC; Python's
+    # Path.is_file raises PermissionError for that instead of returning False.
+    bundle, data = _bundle(tmp_path), tmp_path / "data_root"
+    config.seed_data_root(bundle, data)
+    real_is_file = Path.is_file
+
+    def denied(self: Path) -> bool:
+        if data in self.parents:
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", denied)
+    assert config.default_config_path(data, bundle) == bundle / "config.yaml"
+
+
 def test_default_config_falls_back_to_the_bundle_until_seeded(tmp_path: Path) -> None:
     bundle, data = _bundle(tmp_path), tmp_path / "data_root"
     assert config.default_config_path(data, bundle) == bundle / "config.yaml"

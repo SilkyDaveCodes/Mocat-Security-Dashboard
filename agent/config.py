@@ -8,8 +8,10 @@ Two roots (both the repo root when running from source, so nothing changes there
   (``installer/homesoc.spec``) this is ``sys._MEIPASS``, inside ``C:\\Program Files\\HomeSOC``.
 - :data:`REPO_ROOT`: the data root every relative path in ``config.yaml`` resolves against
   (store, ``data/cache``, evidence, ring pcap, models, allowlists). Frozen this is the writable
-  ``%PROGRAMDATA%\\HomeSOC``, shared by the agent (SYSTEM / admin) and the app (normal user);
-  :func:`seed_data_root` copies the bundled files there on agent start.
+  ``%PROGRAMDATA%\\HomeSOC``, written by the agent (SYSTEM / admin) and locked to SYSTEM +
+  Administrators (#72, ``agent/data_acl.py``; only ``data/evidence`` is readable by Users);
+  :func:`seed_data_root` copies the bundled files there on agent start. The app (normal user)
+  reads the bundled ``config.yaml`` (:func:`default_config_path`).
 """
 
 from __future__ import annotations
@@ -69,15 +71,25 @@ DEFAULT_STORE_PATH: Path = REPO_ROOT / "data" / "homesoc.db"
 def default_config_path(data_root: Path | None = None, bundle_root: Path | None = None) -> Path:
     """``config.yaml`` in the data root, or the bundled copy if the data root has none yet.
 
-    The fallback lets the app (normal user) start before the agent has seeded the data root.
+    The fallback lets the app (normal user) start before the agent has seeded the data root,
+    and once the agent has locked it to SYSTEM + Administrators (#72, ``agent/data_acl.py``):
+    the user can't read it then, and ``Path.is_file`` raises ``PermissionError`` for that.
     """
     data_root = REPO_ROOT if data_root is None else data_root
     bundle_root = BUNDLE_ROOT if bundle_root is None else bundle_root
     path = data_root / "config.yaml"
-    if path.is_file():
+    if _readable_file(path):
         return path
     bundled = bundle_root / "config.yaml"
-    return bundled if bundled.is_file() else path
+    return bundled if _readable_file(bundled) else path
+
+
+def _readable_file(path: Path) -> bool:
+    """``path.is_file()``, but False (not an error) when access to it is denied."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
 
 
 def seed_data_root(bundle_root: Path | None = None, data_root: Path | None = None) -> list[Path]:

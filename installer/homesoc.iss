@@ -11,6 +11,11 @@
 ;                      launched after setup as the user who ran setup (not elevated).
 ; Writable data (config.yaml, SQLite db, data\cache, evidence, ring pcap, agent.log) lives in
 ; %PROGRAMDATA%\HomeSOC; the agent seeds it from the bundle (agent/config.py: seed_data_root).
+; Setup locks that folder (#72) before the agent starts: no inheritance from C:\ProgramData,
+; SYSTEM + Administrators full control (owner Administrators), no Users access except read on
+; data\evidence (exported pcaps open in Wireshark without admin). The agent applies the same ACL
+; on every start (agent/data_acl.py: acl_commands; tests/test_installer.py keeps them equal).
+; Well-known SIDs, so it works on non-English Windows.
 ;
 ; Uninstall stops both programs, deletes the scheduled task and removes the firewall rules in
 ; group HomeSOC ONLY (§9.3): no other firewall or Defender setting is ever touched.
@@ -50,6 +55,13 @@ UninstallDisplayName={#AppDisplayName}
 [Files]
 Source: "..\dist\HomeSOC\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[Dirs]
+; The data folder and the evidence folder exist before [Run] locks them. Kept on uninstall
+; (alerts, settings), like before.
+Name: "{commonappdata}\{#AppName}"; Flags: uninsneveruninstall
+Name: "{commonappdata}\{#AppName}\data"; Flags: uninsneveruninstall
+Name: "{commonappdata}\{#AppName}\data\evidence"; Flags: uninsneveruninstall
+
 [InstallDelete]
 ; Shortcuts of an install from before the MoCat rename (else the app would start twice at logon).
 Type: files; Name: "{autoprograms}\HomeSOC.lnk"
@@ -60,6 +72,11 @@ Name: "{autoprograms}\{#AppDisplayName}"; Filename: "{app}\{#AppExe}"
 Name: "{commonstartup}\{#AppDisplayName}"; Filename: "{app}\{#AppExe}"
 
 [Run]
+; Data folder ACL (#72), before the agent starts. Same commands, same order as agent/data_acl.py.
+Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\{#AppName}"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /Q"; Flags: runhidden waituntilterminated; StatusMsg: "Securing the MoCat data folder..."
+Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\{#AppName}"" /setowner *S-1-5-32-544 /T /Q"; Flags: runhidden waituntilterminated; StatusMsg: "Securing the MoCat data folder..."
+Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\{#AppName}"" /remove:g *S-1-5-32-545 *S-1-5-11 *S-1-1-0 *S-1-3-0 /T /Q"; Flags: runhidden waituntilterminated; StatusMsg: "Securing the MoCat data folder..."
+Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\{#AppName}\data\evidence"" /grant:r *S-1-5-32-545:(OI)(CI)RX /Q"; Flags: runhidden waituntilterminated; StatusMsg: "Securing the MoCat data folder..."
 ; Agent: register the elevated startup task (no 72 h time limit, restart on failure) and start it.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$a = New-ScheduledTaskAction -Execute '{app}\{#AgentExe}'; $t = New-ScheduledTaskTrigger -AtStartup; $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); Register-ScheduledTask -TaskName '{#AgentTask}' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null; Start-ScheduledTask -TaskName '{#AgentTask}'"""; Flags: runhidden waituntilterminated; StatusMsg: "Starting the MoCat agent..."
 ; App: as the user who ran setup, not elevated.

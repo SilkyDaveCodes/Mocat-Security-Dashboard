@@ -520,7 +520,9 @@ def test_installer_keeps_the_internal_homesoc_names() -> None:
     assert defines["AgentTask"] == "HomeSOC Agent"
     assert defines["AgentExe"] == "HomeSOC-Agent.exe" and defines["AppExe"] == "HomeSOC.exe"
     text = ISS.read_text(encoding="utf-8")
-    assert "-TaskName 'HomeSOC Agent'" in parse_iss(text)[0]["Run"][0]
+    # #72: [Run] now starts with the data-folder ACL steps, so find the agent entry by content
+    [agent_line] = [line for line in parse_iss(text)[0]["Run"] if "Register-ScheduledTask" in line]
+    assert "-TaskName 'HomeSOC Agent'" in agent_line
     assert uninstall_problems(text) == []
 
 
@@ -603,6 +605,116 @@ def test_rebrand_left_the_internal_names_shown_nowhere_as_text() -> None:
     assert "Remove-NetFirewallRule -Group 'HomeSOC'" in text
     assert "RemoveHomeSOCFirewallRules" in text
     assert "/IM HomeSOC-Agent.exe" in " ".join(_command(e) for e in entries("UninstallRun"))
+
+
+# --- the data folder ACL (ticket #72) --------------------------------------------------------
+
+DATA_DIR = "{commonappdata}\\HomeSOC"
+EVIDENCE_DIR = DATA_DIR + "\\data\\evidence"
+
+
+def _args(params: str) -> list[str]:
+    """An Inno ``Parameters`` string split like the Windows command line (quotes removed)."""
+    return [quoted or bare for quoted, bare in re.findall(r'"([^"]*)"|(\S+)', params)]
+
+
+def icacls_entries(text: str) -> list[dict[str, str]]:
+    return [e for e in entries("Run", text) if e.get("Filename", "").casefold().endswith(
+        "icacls.exe")]
+
+
+def acl_problems(text: str) -> list[str]:
+    """Why an .iss does not lock the data folder like the agent does (empty = fine)."""
+    from pathlib import PureWindowsPath
+
+    from agent import data_acl
+    expected = [cmd[1:] for cmd in data_acl.acl_commands(
+        PureWindowsPath(DATA_DIR), PureWindowsPath(EVIDENCE_DIR), "icacls.exe")]
+    problems = []
+    acl = icacls_entries(text)
+    got = [_args(e.get("Parameters", "")) for e in acl]
+    if got != expected:
+        problems.append(f"[Run] icacls steps {got} != the agent's acl_commands {expected}")
+    for e in acl:
+        if e.get("Filename") != "{sys}\\icacls.exe":
+            problems.append(f"icacls must be {{sys}}\\icacls.exe, not {e.get('Filename')!r}")
+        if not {"runhidden", "waituntilterminated"} <= set(e.get("Flags", "").split()):
+            problems.append(f"icacls step must be runhidden waituntilterminated: {e}")
+        if {"postinstall", "runasoriginaluser", "nowait"} & set(e.get("Flags", "").split()):
+            problems.append(f"icacls step must run elevated, during setup: {e}")
+    run = entries("Run", text)
+    agent = [i for i, e in enumerate(run) if "Register-ScheduledTask" in _command(e)]
+    last_acl = max((i for i, e in enumerate(run) if e in acl), default=None)
+    if not agent or last_acl is None or last_acl > agent[0]:
+        problems.append("the data folder must be locked before the agent task starts")
+    dirs = {e.get("Name"): e.get("Flags", "") for e in entries("Dirs", text)}
+    for name in (DATA_DIR, EVIDENCE_DIR):
+        if name not in dirs:
+            problems.append(f"[Dirs] must create {name}")
+        elif "uninsneveruninstall" not in dirs[name].split():
+            problems.append(f"{name} must survive uninstall (alerts, settings), like before")
+    # Users may get read + execute on the evidence folder and nothing anywhere else
+    for args in got:
+        for arg in args:
+            if arg.upper().startswith(("*S-1-5-32-545:", "*S-1-5-11:", "*S-1-1-0:")) and (
+                    args[0] != EVIDENCE_DIR or arg.split(":", 1)[1] != "(OI)(CI)RX"):
+                problems.append(f"broad access granted: {arg} on {args[0]}")
+    return problems
+
+
+def test_installer_locks_the_data_folder_like_the_agent() -> None:
+    text = ISS.read_text(encoding="utf-8")
+    assert acl_problems(text) == []
+    steps = [_args(e["Parameters"]) for e in icacls_entries(text)]
+    assert steps[0] == [DATA_DIR, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F",
+                        "*S-1-5-32-544:(OI)(CI)F", "/Q"]
+    assert steps[-1] == [EVIDENCE_DIR, "/grant:r", "*S-1-5-32-545:(OI)(CI)RX", "/Q"]
+    # the evidence folder exists before it is granted
+    dirs = [e["Name"] for e in entries("Dirs")]
+    assert dirs.index(EVIDENCE_DIR) > dirs.index(DATA_DIR)
+
+
+def test_installer_acl_uses_the_well_known_sids_only() -> None:
+    # Localised account names ("Administrateurs", "Benutzer") would fail on non-English Windows.
+    for e in icacls_entries(ISS.read_text(encoding="utf-8")):
+        for arg in _args(e["Parameters"])[1:]:
+            if not arg.startswith("/"):
+                assert re.fullmatch(r"\*S-1-[0-9-]+(:\(OI\)\(CI\)(F|RX))?", arg), arg
+
+
+@pytest.mark.parametrize(("old", "new"), [
+    # inheritance from C:\ProgramData kept
+    (' /inheritance:r /grant:r *S-1-5-18', ' /grant:r *S-1-5-18'),
+    # Users get read on the whole folder
+    ('*S-1-5-32-544:(OI)(CI)F /Q"', '*S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX /Q"'),
+    # Users get modify on the evidence folder
+    ("*S-1-5-32-545:(OI)(CI)RX", "*S-1-5-32-545:(OI)(CI)M"),
+    # a localised name instead of the SID
+    ("*S-1-5-32-544:(OI)(CI)F", "Administrators:(OI)(CI)F"),
+    # the explicit Users / Everyone grants are no longer scrubbed
+    (" /remove:g *S-1-5-32-545 *S-1-5-11 *S-1-1-0 *S-1-3-0 /T /Q", " /remove:g *S-1-3-0 /T /Q"),
+    # the evidence folder is not created
+    ('Name: "{commonappdata}\\{#AppName}\\data\\evidence"; Flags: uninsneveruninstall\n', ""),
+    # setup would delete the data folder on uninstall
+    ('Name: "{commonappdata}\\{#AppName}"; Flags: uninsneveruninstall',
+     'Name: "{commonappdata}\\{#AppName}"'),
+])
+def test_acl_check_catches_a_weaker_installer(old: str, new: str) -> None:
+    # Mutation check: each weakening must be caught.
+    original = ISS.read_text(encoding="utf-8")
+    assert old in original, old
+    assert acl_problems(original.replace(old, new, 1)) != []
+
+
+def test_acl_check_catches_the_lock_running_after_the_agent_starts() -> None:
+    original = ISS.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    acl = [ln for ln in lines if ln.startswith('Filename: "{sys}\\icacls.exe"')]
+    assert len(acl) == 4
+    rest = [ln for ln in lines if ln not in acl]
+    agent_at = next(i for i, ln in enumerate(rest) if "Register-ScheduledTask" in ln)
+    moved = "".join(rest[:agent_at + 1] + acl + rest[agent_at + 1:])
+    assert acl_problems(moved) != []
 
 
 def test_iss_parser_unquotes_inno_strings() -> None:
@@ -725,3 +837,31 @@ def test_readme_says_the_defender_exclusion_is_test_vm_only() -> None:
 def test_readme_documents_the_manual_fresh_vm_check() -> None:
     section = _readme_section("Manual check")
     assert "HomeSOC-Setup.exe" in section and "green" in section
+
+
+def test_readme_manual_check_verifies_the_data_folder_acl() -> None:
+    # #72: the clean-VM ACL check (icacls /T as admin, then denied reads/creates as a user)
+    section = _readme_section("Manual check")
+    assert "icacls C:\\ProgramData\\HomeSOC /T" in section
+    for needle in ("agent.log", "homesoc.db", "ring_*.pcapng", "New-Item C:\\ProgramData\\HomeSOC",
+                   "Access is denied", "data\\evidence", "Wireshark", "non-admin"):
+        assert needle in section, needle
+
+
+def test_readme_says_config_is_edited_from_an_admin_editor() -> None:
+    build = _readme_section("installer")
+    assert "C:\\ProgramData\\HomeSOC\\config.yaml` from an admin editor" in build
+    assert "-Verb RunAs" in build
+
+
+def test_readme_hand_acl_commands_match_the_agent() -> None:
+    from pathlib import PureWindowsPath
+
+    from agent import data_acl
+    build = _readme_section("installer")
+    lines = [ln.strip() for ln in build.splitlines() if ln.strip().startswith("icacls ")]
+    got = [[a.strip("'") for a in _args(ln)[1:]] for ln in lines]
+    root = "$d"
+    expected = [cmd[1:] for cmd in data_acl.acl_commands(
+        PureWindowsPath(root), PureWindowsPath(root + "\\data\\evidence"), "icacls")]
+    assert got == expected

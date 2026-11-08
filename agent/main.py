@@ -37,7 +37,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from agent import api, capture, config, evidence, procinfo
+from agent import api, capture, config, data_acl, evidence, procinfo
 from agent.bus import Bus, Subscription
 from agent.detectors.anomaly import AnomalyDetector
 from agent.detectors.beacon import BeaconDetector
@@ -434,11 +434,33 @@ async def _track_flows(sub: Subscription, tracker: api.FlowTracker) -> None:
             tracker.add(event)
 
 
+def secure_data_folder(cfg: dict[str, Any], run: data_acl.Run | None = None) -> bool | None:
+    """Lock the installed data root to SYSTEM + Administrators, evidence readable (#72).
+
+    A no-op (``None``) from source. A failure is logged as an ERROR and the agent runs on,
+    unless ``data_acl.refuse_on_failure`` is true: then it exits (``SystemExit(1)``).
+    """
+    try:
+        locked = data_acl.secure_installed_data_root(
+            cfg, evidence.EvidenceSettings.from_config(cfg).evidence_dir,
+            frozen=config.FROZEN, data_root=config.REPO_ROOT, bundle_root=config.BUNDLE_ROOT,
+            run=run)
+    except OSError as exc:  # the data / evidence folder could not be created
+        logger.error("Could not lock the data folder %s: %s", config.REPO_ROOT, exc)
+        locked = False
+    if locked is False and data_acl.settings(cfg)[1]:
+        logger.error("data_acl.refuse_on_failure is true: not starting with an unlocked "
+                     "data folder")
+        raise SystemExit(1)
+    return locked
+
+
 def main() -> None:
     """``python -m agent.main`` (or the installed ``HomeSOC-Agent.exe``): run until Ctrl+C.
 
     Installed (frozen), the data root ``%PROGRAMDATA%\\HomeSOC`` is seeded from the bundle
-    first and the log also goes to ``agent.log`` there (the exe has no console).
+    first, locked to SYSTEM + Administrators (:func:`secure_data_folder`, #72), and the log also
+    goes to ``agent.log`` there (the exe has no console).
     """
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     try:
@@ -454,6 +476,7 @@ def main() -> None:
     except config.ConfigError as exc:
         logger.error("%s", exc)
         raise SystemExit(1) from exc
+    secure_data_folder(cfg)  # a no-op when running from source
     stop_event = threading.Event()
     try:
         asyncio.run(run_agent(cfg, stop_event, api_starter=api.start_in_thread,
