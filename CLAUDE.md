@@ -373,7 +373,11 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
   longer matches the signal's is treated as unknown (alert only, §9.6). The scorer is pruned every
   `pipeline.prune_interval_s`.
 - Adding a detector = one `(name, factory)` entry in `DETECTOR_FACTORIES`; one that fails to start
-  is logged and left out.
+  is logged and left out. A factory is `(cfg, store) -> process`: `build_detectors(cfg, store=)`
+  (called by `Pipeline.from_config` with the agent's real `Store`) hands every factory the store.
+  The default entries are intel, dga, beacon, flow_model and anomaly (#53; `AnomalyDetector(cfg,
+  store)` keeps its baselines in that store, wall clock). Anomaly windows are closed by its own
+  `process()` on every flow, so the pipeline drives no separate `tick()`.
 
 ### 6.6 `agent/api.py` (CE)
 - `GET /status`, `GET /apps` (per-process bytes and destinations, last 10 min), `GET /alerts`,

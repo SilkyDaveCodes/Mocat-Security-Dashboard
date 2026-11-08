@@ -17,8 +17,8 @@ once). Injected through the constructor seams:
       network); DgaDetector: the real models/dga.joblib when present, else the feature stub
       from the smoke test, with the real Tranco cache when present, else
       tests/fixtures/tranco_standin.txt. The real data/domain_allowlist.txt either way;
-    * AnomalyDetector: the real one, with baselines in the test's SQLite store. (agent/main.py
-      does not list it in DETECTOR_FACTORIES yet; the replay runs it anyway.)
+    * AnomalyDetector: the real one (as in agent/main.py's DETECTOR_FACTORIES), with baselines
+      in the test's SQLite store and the shared fake clock.
 
 A positive control splices the fake-malware check-ins into the same recording and must be caught,
 so the quiet result can't come from a harness that sees nothing.

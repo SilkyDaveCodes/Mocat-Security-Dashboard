@@ -21,8 +21,9 @@ Design
     * Scoring owns the policy (mode, allowlist, unknown exe path); the pipeline only carries out
       the :class:`agent.scoring.ActionRequest` it is given and adds no block paths of its own.
 
-Adding a detector (e.g. anomaly): write its module with a ``process(event)`` method and
-add one ``(name, factory)`` entry to :data:`DETECTOR_FACTORIES`.
+Adding a detector: write its module with a ``process(event)`` method and add one
+``(name, factory)`` entry to :data:`DETECTOR_FACTORIES`; a factory is ``(cfg, store)`` ->
+``process`` (the anomaly detector keeps its baselines in that store).
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from typing import Any
 
 from agent import api, capture, config, evidence, procinfo
 from agent.bus import Bus, Subscription
+from agent.detectors.anomaly import AnomalyDetector
 from agent.detectors.beacon import BeaconDetector
 from agent.detectors.dga import DgaDetector
 from agent.detectors.flow_model import FlowModelDetector
@@ -59,7 +61,7 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 LOG_FILE_NAME = "agent.log"  # in the data root, installed (frozen) agent only
 
 DetectorFn = Callable[[FlowEvent], list[Signal]]
-DetectorFactory = Callable[[dict[str, Any]], DetectorFn]
+DetectorFactory = Callable[[dict[str, Any], Store | None], DetectorFn]  # (cfg, store)
 ProcLookup = Callable[[int], ProcInfo | None]
 FirewallFn = Callable[[str], Action]
 Publish = Callable[[Any], None]
@@ -76,25 +78,32 @@ class NamedDetector:
 
 
 DETECTOR_FACTORIES: tuple[tuple[str, DetectorFactory], ...] = (
-    ("intel", lambda cfg: IntelDetector(cfg).process),
-    ("dga", lambda cfg: DgaDetector(cfg).process),
-    ("beacon", lambda cfg: BeaconDetector(cfg).process),
+    ("intel", lambda cfg, store: IntelDetector(cfg).process),
+    ("dga", lambda cfg, store: DgaDetector(cfg).process),
+    ("beacon", lambda cfg, store: BeaconDetector(cfg).process),
     # Without models/flow.joblib it logs a warning and returns no signals.
-    ("flow_model", lambda cfg: FlowModelDetector(cfg).process),
-    # ("anomaly", ...) goes here once the pipeline passes it the store.
+    ("flow_model", lambda cfg, store: FlowModelDetector(cfg).process),
+    # Baselines are saved to / reloaded from the agent's Store (§6.3). Its windows are closed
+    # by process() itself (every flow, any direction, closes the windows whose 60 s boundary
+    # has passed), so the live pipeline needs no separate tick().
+    ("anomaly", lambda cfg, store: AnomalyDetector(cfg, store).process),
 )
-"""Detectors the agent runs, in order. One entry per detector module."""
+"""Detectors the agent runs, in order. One entry per detector module. A factory gets the
+config and the agent's :class:`Store` (``None`` keeps a detector's state in memory)."""
 
 
 def build_detectors(
     cfg: dict[str, Any],
-    factories: Iterable[tuple[str, DetectorFactory]] = DETECTOR_FACTORIES,
+    factories: Iterable[tuple[str, DetectorFactory]] | None = None,
+    *,
+    store: Store | None = None,
 ) -> list[NamedDetector]:
-    """Build every detector. One that fails to start is logged and left out."""
+    """Build every detector (default: :data:`DETECTOR_FACTORIES`, read at call time), giving
+    each factory ``cfg`` and ``store``. One that fails to start is logged and left out."""
     detectors: list[NamedDetector] = []
-    for name, factory in factories:
+    for name, factory in DETECTOR_FACTORIES if factories is None else factories:
         try:
-            detectors.append(NamedDetector(name, factory(cfg)))
+            detectors.append(NamedDetector(name, factory(cfg, store)))
         except Exception:
             logger.exception("Detector %r could not start; running without it", name)
     logger.info("Detectors running: %s", ", ".join(d.name for d in detectors) or "none")
@@ -211,7 +220,7 @@ class Pipeline:
         """Build the real pipeline: detectors, scorer and process lookup from ``config.yaml``."""
         pipeline_cfg = cfg.get("pipeline") or {}
         return cls(
-            detectors if detectors is not None else build_detectors(cfg),
+            detectors if detectors is not None else build_detectors(cfg, store=store),
             Scorer(cfg),
             store,
             publish,

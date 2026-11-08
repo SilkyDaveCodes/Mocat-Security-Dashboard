@@ -158,5 +158,6 @@ Chrome flow would not get the allowlisted score. Worth a capture ticket if it sh
   unusual hostname in the VM recording. Train the model and cache Tranco first
   (`models/train_dga.py`), or add the domain to `tests/fixtures/tranco_standin.txt` if it really
   is a top-100k domain.
-- The anomaly detector isn't in `agent/main.py`'s `DETECTOR_FACTORIES` yet; the replay runs it
-  anyway, so it is covered once it is wired in.
+- The anomaly detector is in `agent/main.py`'s `DETECTOR_FACTORIES` (#53), with its baselines
+  in the agent's store; the replay runs the same detector on the fake clock, so a live false
+  positive from it would show up here too.

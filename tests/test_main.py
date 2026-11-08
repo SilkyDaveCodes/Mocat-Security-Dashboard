@@ -342,12 +342,12 @@ def test_handle_logs_each_flow(
 def test_build_detectors_skips_one_that_fails_to_start(
     cfg: dict[str, Any], caplog: pytest.LogCaptureFixture
 ) -> None:
-    def broken(_: dict[str, Any]) -> Any:
+    def broken(_: dict[str, Any], __: Store | None) -> Any:
         raise FileNotFoundError("model missing")
 
     with caplog.at_level(logging.ERROR, logger="agent.main"):
         detectors = build_detectors(cfg, [("broken", broken),
-                                          ("beacon", lambda c: BeaconDetector(c).process)])
+                                          ("beacon", lambda c, s: BeaconDetector(c).process)])
     assert [d.name for d in detectors] == ["beacon"]
     assert "Detector 'broken' could not start" in caplog.text
 
@@ -355,7 +355,124 @@ def test_build_detectors_skips_one_that_fails_to_start(
 def test_default_detector_factories_cover_existing_detectors() -> None:
     from agent.main import DETECTOR_FACTORIES
 
-    assert [name for name, _ in DETECTOR_FACTORIES] == ["intel", "dga", "beacon", "flow_model"]
+    assert [name for name, _ in DETECTOR_FACTORIES] == [
+        "intel", "dga", "beacon", "flow_model", "anomaly"
+    ]
+
+
+# --- anomaly detector in the default factories (#53) ----------------------------------------
+
+UPLOAD_PROC = "uploader.exe"
+UPLOAD_PID = 5151
+UPLOAD_PROCINFO = ProcInfo(pid=UPLOAD_PID, name=UPLOAD_PROC,
+                           exe_path=r"C:\Users\demo\Downloads\uploader.exe",
+                           in_risky_dir=True, signed=False)
+EXFIL_IP = "203.0.113.7"
+
+
+def anomaly_factories() -> list[tuple[str, Any]]:
+    from agent.main import DETECTOR_FACTORIES
+
+    return [(name, f) for name, f in DETECTOR_FACTORIES if name == "anomaly"]
+
+
+def upload_flow(bytes_out: int, direction: str = "outbound") -> FlowEvent:
+    return FlowEvent(ts_ms=T0_MS, end_ms=T0_MS + 100, process=UPLOAD_PROC, pid=UPLOAD_PID,
+                     src_ip=PC_IP, src_port=52000, dst_ip=EXFIL_IP, dst_port=443, protocol=6,
+                     bytes_out=bytes_out, bytes_in=2_000, packets=20, direction=direction)
+
+
+def seed_calibrated_baseline(store: Store, windows: int = 40) -> None:
+    """A finished calibration: ``windows`` small 60 s upload windows for UPLOAD_PROC."""
+    store.save_baseline(UPLOAD_PROC, {
+        "version": 1,
+        "calibration_end_ms": 1,  # long past, by the wall clock
+        "windows": [[20_000 + 500 * (i % 7), 4 + i % 3, 1 + i % 2] for i in range(windows)],
+    })
+
+
+@pytest.fixture
+def fake_wall_clock(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The anomaly factory uses the detector's default wall clock; drive it from a list (ms)."""
+    from agent.detectors import anomaly as anomaly_mod
+
+    now_ms = [T0_MS]
+    monkeypatch.setattr(anomaly_mod, "time", SimpleNamespace(time=lambda: now_ms[0] / 1000))
+    return now_ms
+
+
+def test_default_anomaly_detector_builds_with_store_and_processes_flows(
+    cfg: dict[str, Any], store: Store
+) -> None:
+    detectors = build_detectors(cfg, anomaly_factories(), store=store)
+    assert [d.name for d in detectors] == ["anomaly"]
+    [anomaly] = detectors
+    assert anomaly.process(upload_flow(5_000)) == []  # calibrating: collects, never signals
+    assert anomaly.process(upload_flow(5_000, direction="inbound")) == []
+
+
+def test_default_anomaly_detector_saves_its_baseline_to_the_store(
+    cfg: dict[str, Any], store: Store, fake_wall_clock: list[int]
+) -> None:
+    [anomaly] = build_detectors(cfg, anomaly_factories(), store=store)
+    anomaly.process(upload_flow(12_345))
+    anomaly.process(upload_flow(1_000))
+    assert store.load_baseline(UPLOAD_PROC) is None  # window still open
+    fake_wall_clock[0] += 61_000  # past the 60 s boundary: the next flow closes the window
+    anomaly.process(upload_flow(10, direction="inbound"))
+    saved = store.load_baseline(UPLOAD_PROC)
+    assert saved is not None
+    assert saved["windows"] == [[13_345, 2, 1]]
+    assert saved["calibration_end_ms"] > fake_wall_clock[0] - 61_000  # a fresh calibration
+
+
+def test_default_anomaly_detector_flags_a_big_upload_from_a_calibrated_process(
+    cfg: dict[str, Any], store: Store
+) -> None:
+    seed_calibrated_baseline(store)
+    [anomaly] = build_detectors(cfg, anomaly_factories(), store=store)
+    assert anomaly.process(upload_flow(30_000)) == []  # a normal-sized flow
+    [signal] = anomaly.process(upload_flow(20_000_000))  # a 20 MB upload in the same window
+    assert signal.detector == "anomaly"
+    assert signal.process == UPLOAD_PROC and signal.pid == UPLOAD_PID
+    assert signal.target == EXFIL_IP
+    assert signal.mitre == "T1041"
+    assert 0.6 <= signal.score <= 0.9
+
+
+def test_pipeline_from_config_gives_the_anomaly_detector_its_store(
+    cfg: dict[str, Any], store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent import main as main_mod
+
+    seed_calibrated_baseline(store)
+    monkeypatch.setattr(main_mod, "DETECTOR_FACTORIES", tuple(anomaly_factories()))
+    monkeypatch.setattr(main_mod.procinfo, "info",
+                        lambda pid: UPLOAD_PROCINFO if pid == UPLOAD_PID else None)
+    published: list[Any] = []
+    pipeline = Pipeline.from_config(cfg, store, published.append)
+    assert [d.name for d in pipeline.detectors] == ["anomaly"]
+    pipeline.scorer.mode = "notify"
+
+    [alert] = pipeline.handle(upload_flow(20_000_000))
+    assert [s.detector for s in alert.signals] == ["anomaly"]
+    assert alert.process == UPLOAD_PROC
+    assert alert.action_ids == []  # notify mode: alert only
+    assert store.get_alert(alert.id) is not None
+    assert alert in published
+
+
+def test_default_anomaly_factory_failing_to_start_is_left_out(
+    cfg: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    class BrokenStore:
+        def load_baselines(self) -> dict[str, Any]:
+            raise OSError("disk gone")
+
+    with caplog.at_level(logging.ERROR, logger="agent.main"):
+        detectors = build_detectors(cfg, anomaly_factories(), store=BrokenStore())  # type: ignore[arg-type]
+    assert detectors == []
+    assert "Detector 'anomaly' could not start" in caplog.text
 
 
 def test_dga_detector_without_model_does_not_crash(cfg: dict[str, Any], tmp_path: Path,
