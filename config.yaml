@@ -61,7 +61,9 @@ detectors:
     score_min: 0.6             # signal score range for anomalous windows
     score_max: 0.9
     # Calibration length comes from calibration.minutes above.
-    global_min_windows: 10     # pooled windows needed before the global model is fitted
+    global_min_windows: 3      # pooled windows needed before the global model is fitted. Low on
+                               # purpose: capture is on the host-only adapter, where a 10-min demo
+                               # calibration only sees ~7 windows of DHCP/multicast chatter (#62)
     max_windows: 1440          # windows kept per process baseline (oldest dropped; 24 h of 60 s)
     learn_after_calibration: true  # keep adding normal (unflagged, <= threshold) windows later
     contamination: auto        # IsolationForest contamination ("auto" or a float in (0, 0.5])

@@ -200,6 +200,37 @@ def test_thin_process_is_scored_by_global_model(cfg: dict[str, Any], clock: Fake
     assert "apps on this PC usually upload" in signals[0].reasons[0]
 
 
+def test_quiet_host_only_calibration_still_flags_the_20mb_upload(clock: FakeClock) -> None:
+    """#62 live run: capture is on the host-only adapter, so the 10-min demo calibration only saw
+    DHCP/multicast chatter -- 7 windows over 3 processes (browsing left via the NAT adapter).
+    With ``config.yaml``'s ``global_min_windows`` that must still be enough for the global model
+    to flag the fake malware's single 20 MB POST, a process it never saw during calibration."""
+    cfg = copy.deepcopy(config.load())  # the real 10-min calibration and thresholds
+    assert cfg["calibration"]["minutes"] == 10
+    det = AnomalyDetector(cfg, clock=clock)
+    # (window index, process, bytes_out): the VM's baseline, {'unknown': 3, 'svchost.exe': 3,
+    # 'msedge.exe': 1}, with the flow sizes from its agent log.
+    quiet = [
+        (0, "unknown", 343 + 450 + 270), (0, "svchost.exe", 174 + 134), (1, "svchost.exe", 537),
+        (4, "msedge.exe", 246 + 306), (8, "unknown", 343 + 450 + 270), (8, "svchost.exe", 537),
+        (9, "unknown", 343),
+    ]
+    for index, proc, size in quiet:
+        clock.at_window(index)
+        assert det.process(flow(size, process=proc, dst_ip="224.0.0.22")) == []
+    past_calibration(det, clock)
+    assert det.total_windows == 7
+
+    signals = upload(det, 20_971_520, process="python.exe")
+
+    assert len(signals) == 1
+    sig = signals[0]
+    assert (sig.detector, sig.mitre, sig.process, sig.target) == (
+        "anomaly", "T1041", "python.exe", C2_IP)
+    assert 0.6 <= sig.score <= 0.9
+    assert det.assess("python.exe", [20_971_520, 1, 1]).model == "global"
+
+
 def test_baselines_reload_after_restart(
     cfg: dict[str, Any], clock: FakeClock, tmp_path: Path
 ) -> None:
