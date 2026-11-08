@@ -214,7 +214,13 @@ def _did_sentence(action: Action, process: str) -> str:
     return f"{done}, but that was later undone." if action.undone else f"{done}."
 
 
-def _nothing_blocked(process: str, mode: str, allowlisted: bool) -> str:
+def _nothing_blocked(process: str, mode: str, allowlisted: bool, own_exe: bool = False) -> str:
+    if own_exe:
+        return (
+            f"Nothing was blocked, because {process} is the program MoCat itself runs on. "
+            "Quarantining it would also cut off MoCat's own protection, so MoCat never "
+            "blocks it."
+        )
     if allowlisted:
         return (
             f"Nothing was blocked, because {process} is on your trusted apps list. "
@@ -239,10 +245,10 @@ def _is_containment(action: Action) -> bool:
 
 
 def _what_we_did(
-    process: str, actions: Sequence[Action], mode: str, allowlisted: bool
+    process: str, actions: Sequence[Action], mode: str, allowlisted: bool, own_exe: bool = False
 ) -> str:
     if not actions:
-        return _nothing_blocked(process, mode, allowlisted)
+        return _nothing_blocked(process, mode, allowlisted, own_exe)
     sentences = [_did_sentence(a, process) for a in actions]
     if any(_is_containment(a) for a in actions):
         sentences.append(ALERTS_SCREEN_UNDO)
@@ -253,7 +259,11 @@ def _what_we_did(
 
 
 def _should_do(
-    process: str, signals: Sequence[Signal], actions: Sequence[Action], allowlisted: bool
+    process: str,
+    signals: Sequence[Signal],
+    actions: Sequence[Action],
+    allowlisted: bool,
+    own_exe: bool = False,
 ) -> str:
     detectors = set(_group_by_detector(signals))
     active = {a.kind for a in actions if _is_containment(a)}
@@ -263,6 +273,12 @@ def _should_do(
             f"If you don't recognise {process}, uninstall or delete it, then run a full scan "
             "with Microsoft Defender. If you trust it, you can undo the quarantine on the "
             "Alerts screen."
+        )
+    elif own_exe:
+        steps.append(
+            f"MoCat cannot quarantine {process} without blocking itself. If you didn't start "
+            "the script or program that caused this, close it and run a full scan with "
+            "Microsoft Defender."
         )
     elif allowlisted:
         steps.append(
@@ -301,6 +317,7 @@ def build_alert_text(
     *,
     mode: str = "notify",
     allowlisted: bool = False,
+    own_exe: bool = False,
 ) -> AlertText:
     """Build the plain-English text of an alert.
 
@@ -311,12 +328,14 @@ def build_alert_text(
         mode: the response mode at alert time (``off | notify | auto``); explains why
             nothing was blocked.
         allowlisted: the app is on the allowlist, so it was never auto-contained.
+        own_exe: the app's exe is the one HomeSOC itself runs on (#69), so it is never
+            quarantined.
     """
     process = process or "unknown"
     return AlertText(
         title=_title(process, signals),
         what_happened=_what_happened(process, signals),
-        what_we_did=_what_we_did(process, actions, mode, allowlisted),
-        what_you_should_do=_should_do(process, signals, actions, allowlisted),
+        what_we_did=_what_we_did(process, actions, mode, allowlisted, own_exe),
+        what_you_should_do=_should_do(process, signals, actions, allowlisted, own_exe),
         mitre=mitre_ids(signals),
     )

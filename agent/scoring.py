@@ -17,6 +17,8 @@ Policy (``mode``: ``off | notify | auto``):
     * ``auto`` and (intel hit, or ``risk >= auto_quarantine.risk`` from
       ``>= auto_quarantine.min_detectors`` detectors) -> request ``quarantine_app`` on the exe path.
       Allowlisted apps and apps whose exe path is unknown are never quarantined: alert only (§9.6).
+      Nor is HomeSOC's own executable (:func:`own_executables`: ``sys.executable`` and, from
+      source, the base interpreter): blocking it would cut off HomeSOC itself (#69).
     * Inbound ``flow_model`` signals are about a remote attacker, not a local app, so they are
       windowed per attacker IP (``signal.target``). In ``auto`` with
       ``risk >= auto_block_ip.risk`` -> request ``block_ip`` on that IP. The exe allowlist does not
@@ -35,9 +37,12 @@ from __future__ import annotations
 import ipaddress
 import logging
 import math
+import ntpath
+import os
+import sys
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -81,6 +86,7 @@ class Decision:
     allowlisted: bool = False
     alert: Alert | None = None
     action: ActionRequest | None = None
+    own_exe: bool = False  # the exe is HomeSOC's own (never quarantined, #69)
 
 
 @dataclass
@@ -140,6 +146,54 @@ def _now_ms() -> int:
     return int(time.time() * MS_PER_S)
 
 
+# --- HomeSOC's own executable (#69) ---------------------------------------------------------
+
+
+def normalize_exe_path(path: str) -> str:
+    """A Windows exe path in comparable form: normalised separators / ``..``, case-folded.
+
+    Uses ``ntpath`` (not ``os.path``) so the comparison is Windows-style on every OS: the paths
+    come from Windows processes even when the tests run elsewhere.
+    """
+    return ntpath.normcase(ntpath.normpath(path)).casefold()
+
+
+def own_executables(sys_module: Any = sys) -> frozenset[str]:
+    """Normalised paths of the executable(s) HomeSOC itself runs on, never to be quarantined.
+
+    Always ``sys.executable`` (``HomeSOC-Agent.exe`` when frozen). From source (not frozen) also
+    ``sys._base_executable``: a venv's ``python.exe`` is a launcher that hands off to the base
+    interpreter, so the agent's traffic really comes from that one. Each path is added both as
+    given (made absolute) and with links resolved. ``sys_module`` is injectable for tests.
+    """
+    candidates = [getattr(sys_module, "executable", None)]
+    if not getattr(sys_module, "frozen", False):
+        candidates.append(getattr(sys_module, "_base_executable", None))
+    found: set[str] = set()
+    for path in candidates:
+        if not path:
+            continue
+        path = str(path)
+        found.add(normalize_exe_path(os.path.abspath(path)))
+        try:
+            found.add(normalize_exe_path(os.path.realpath(path)))
+        except (OSError, ValueError):
+            pass
+    return frozenset(found)
+
+
+def is_own_executable(exe_path: str | None, own: Collection[str] | None = None) -> bool:
+    """True when ``exe_path`` is one of HomeSOC's own executables (case-insensitive).
+
+    ``own`` is a set from :func:`own_executables` (computed now when omitted); its entries are
+    normalised again, so a test may pass raw paths.
+    """
+    if not exe_path:
+        return False
+    own_set = own_executables() if own is None else {normalize_exe_path(p) for p in own}
+    return normalize_exe_path(exe_path) in own_set
+
+
 # --- scorer ---------------------------------------------------------------------------------
 
 
@@ -154,6 +208,7 @@ class Scorer:
         clock: Callable[[], int] = _now_ms,
         mode: str | None = None,
         id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
+        self_exes: Collection[str] | None = None,
     ) -> None:
         """
         Args:
@@ -163,6 +218,8 @@ class Scorer:
             clock: Returns the current time in ms. Inject a fake one in tests.
             mode: ``off | notify | auto``. Defaults to ``cfg["mode"]``.
             id_factory: Makes alert IDs.
+            self_exes: Exe paths of HomeSOC itself, never quarantined. Defaults to
+                :func:`own_executables`.
         """
         cfg = cfg if cfg is not None else config_module.load()
         sc = cfg["scoring"]
@@ -183,6 +240,9 @@ class Scorer:
         self._clock = clock
         self._id_factory = id_factory
         self._windows: dict[str, _Window] = {}
+        self._self_exes = frozenset(
+            normalize_exe_path(p) for p in (own_executables() if self_exes is None else self_exes)
+        )
         self.mode = mode if mode is not None else str(cfg["mode"])
 
     @property
@@ -255,15 +315,22 @@ class Scorer:
         proc = None if inbound else window.proc
         process = latest.process or "unknown"
         allowlisted = not inbound and process in self._allowlist
+        own_exe = (
+            not inbound
+            and proc is not None
+            and is_own_executable(proc.exe_path, self._self_exes)
+        )
         decision = Decision(
             process=process, risk=risk, detectors=detectors, mode=self.mode,
-            allowlisted=allowlisted,
+            allowlisted=allowlisted, own_exe=own_exe,
         )
         severity = self.severity_for(risk)
         if severity is None:
             return decision
 
-        request = self._action_request(window, latest, inbound, risk, detectors, allowlisted)
+        request = self._action_request(
+            window, latest, inbound, risk, detectors, allowlisted or own_exe
+        )
         if request is not None and (request.kind, request.target) in window.requested:
             request = None  # already requested in this episode
         if not self._should_alert(window, severity, detectors, request):
@@ -275,7 +342,7 @@ class Scorer:
         window.alerted_detectors = window.alerted_detectors | frozenset(detectors)
         decision.action = request
         decision.alert = self._build_alert(process, proc, risk, severity, signals, request,
-                                           allowlisted)
+                                           allowlisted, own_exe)
         logger.info(
             "Alert %s: %s risk=%.2f detectors=%s action=%s",
             severity, process, risk, ",".join(detectors), request.kind if request else None,
@@ -289,8 +356,9 @@ class Scorer:
         inbound: bool,
         risk: float,
         detectors: list[str],
-        allowlisted: bool,
+        protected: bool,
     ) -> ActionRequest | None:
+        """The action to request; ``protected`` = allowlisted or HomeSOC's own exe."""
         if self.mode != "auto":
             return None
         if inbound:
@@ -304,8 +372,8 @@ class Scorer:
         if not (intel_hit or strong):
             return None
         exe_path = window.proc.exe_path if window.proc is not None else None
-        if allowlisted or not exe_path:
-            # §9.6: in doubt (trusted app, or no exe path to quarantine) -> alert only.
+        if protected or not exe_path:
+            # §9.6: in doubt (trusted app, HomeSOC's own exe, or no exe path) -> alert only.
             return None
         return ActionRequest("quarantine_app", exe_path, latest.process)
 
@@ -331,6 +399,7 @@ class Scorer:
         signals: list[Signal],
         request: ActionRequest | None,
         allowlisted: bool,
+        own_exe: bool,
     ) -> Alert:
         alert = Alert(
             id=self._id_factory(),
@@ -344,14 +413,15 @@ class Scorer:
         # Text assumes the requested action succeeds; finalize_alert() rewrites it with the
         # real outcome once the pipeline has carried it out.
         pending = [Action(kind=request.kind, target=request.target)] if request else []
-        return _with_text(alert, pending, self.mode, allowlisted)
+        return _with_text(alert, pending, self.mode, allowlisted, own_exe)
 
 
 def _with_text(
-    alert: Alert, actions: Sequence[Action], mode: str, allowlisted: bool
+    alert: Alert, actions: Sequence[Action], mode: str, allowlisted: bool, own_exe: bool = False
 ) -> Alert:
     text = alerts_text.build_alert_text(
-        alert.process, alert.signals, actions, mode=mode, allowlisted=allowlisted
+        alert.process, alert.signals, actions, mode=mode, allowlisted=allowlisted,
+        own_exe=own_exe,
     )
     return replace(alert, **text.as_fields())
 
@@ -363,5 +433,6 @@ def finalize_alert(decision: Decision, actions: Sequence[Action]) -> Alert:
     """
     if decision.alert is None:
         raise ValueError("decision has no alert to finalize")
-    alert = _with_text(decision.alert, actions, decision.mode, decision.allowlisted)
+    alert = _with_text(decision.alert, actions, decision.mode, decision.allowlisted,
+                       decision.own_exe)
     return replace(alert, action_ids=[a.id for a in actions if a.id])

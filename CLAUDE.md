@@ -313,6 +313,11 @@ Each detector exposes `def process(event: FlowEvent) -> list[Signal]`.
   - Distinct detectors: each detector counts once, with its highest score in the window.
   - The window uses the clock time a signal was added, not `Signal.ts_ms`.
   - Unknown exe path (`ProcInfo.exe_path is None`) → alert only, never quarantine (§9.6).
+  - HomeSOC's own executable is never quarantined (#69): `scoring.own_executables()` =
+    `sys.executable` plus, when not frozen, `sys._base_executable` (the venv launcher hands off
+    to it), compared case-insensitively after `ntpath` normalisation (`is_own_executable`).
+    Alert only; `Decision.own_exe` makes "What we did" say MoCat did not block it because it is
+    the program MoCat itself runs on. `Scorer(self_exes=)` is injectable for tests.
   - Inbound `flow_model` signals are windowed per attacker IP (`signal.target`), get no context
     boost, and in `auto` with risk ≥ `scoring.auto_block_ip.risk` (0.85) request `block_ip` on
     that IP (never loopback/unspecified). The exe allowlist doesn't apply: no app is touched.
@@ -399,7 +404,8 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
   - `GET /apps` counts flows seen in the last `api.apps_window_s` (600 s), fed from the bus;
     `GET /alerts?limit=N` (default 100) → `{"alerts": [...]}`.
   - Errors: 404 unknown id; 409 action already undone / an `undo` record, alert with no exe
-    path, allowlisted app, or app already quarantined; 400 unsafe exe path; 502 the firewall
+    path, HomeSOC's own executable (`scoring.is_own_executable`, #69; `create_app(self_exes=)`),
+    allowlisted app, or app already quarantined; 400 unsafe exe path; 502 the firewall
     call failed (nothing is marked undone / no Action saved).
   - Undo and undo-all save the returned `kind="undo"` Action; manual quarantine saves the Action,
     appends its id to the alert's `action_ids` and rewrites "What we did".
@@ -595,7 +601,9 @@ sudo dnsmasq -C lab/dnsmasq.conf    # answers all DNS lookups inside the lab
    shield green. Manual check, not automated: steps in README "Manual check on a fresh VM".
    Set `capture.interface` in `C:\ProgramData\HomeSOC\config.yaml` (not the repo copy).
 2. Apps screen shows Chrome/Discord/Spotify traffic.
-3. Run `Downloads\FreeGameCheats.exe` (with `HOMESOC_LAB=1`).
+3. Run the packaged `Downloads\FreeGameCheats.exe` (with `HOMESOC_LAB=1`), not
+   `python lab\fake_malware\freegamecheats.py`: from source its process is `python.exe`, the
+   interpreter HomeSOC itself runs on, which MoCat never quarantines (alert only, #69).
 4. DGA toast → beacon detection → app quarantined (Auto-protect) → C2 log shows check-ins stop.
 5. Open the alert (What happened / What we did / What you should do) → Export evidence → Wireshark.
 6. Undo → rule removed.

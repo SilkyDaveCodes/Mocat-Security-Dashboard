@@ -22,9 +22,10 @@ CORS
 
 Error codes
     404 unknown alert / action id. 409 the request conflicts with the current state (action
-    already undone or not undoable, alert without a known exe path, app on the allowlist, app
-    already quarantined). 400 the stored exe path is unsafe for PowerShell. 502 the firewall
-    (PowerShell) call failed; nothing is marked as done. 422 a body that fails validation.
+    already undone or not undoable, alert without a known exe path, app on the allowlist,
+    HomeSOC's own executable (#69), app already quarantined). 400 the stored exe path is unsafe
+    for PowerShell. 502 the firewall (PowerShell) call failed; nothing is marked as done. 422 a
+    body that fails validation.
     Evidence (``GET /alerts/{id}/evidence``, agent/evidence.py): 400 an alert id that is not
     ``[A-Za-z0-9_-]{1,64}`` (checked before the store is read), 404 unknown id, 409 no signal
     of the alert targets an IP, 502 tshark / mergecap failed or timed out, 503 no exporter, no
@@ -62,7 +63,7 @@ import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, replace
 from pathlib import PureWindowsPath
 from typing import Any, Literal, Protocol
@@ -71,7 +72,7 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from agent import alerts_text
+from agent import alerts_text, scoring
 from agent import config as config_module
 from agent import evidence as evidence_module
 from agent.bus import Bus, Subscription, SubscriptionClosed
@@ -382,6 +383,7 @@ def create_app(
     bus: Bus | None = None,
     ws_flow_rate_per_s: int = DEFAULT_WS_FLOW_RATE_PER_S,
     evidence: evidence_module.EvidenceExporter | None = None,
+    self_exes: Collection[str] | None = None,
 ) -> FastAPI:
     """Build the API.
 
@@ -401,8 +403,11 @@ def create_app(
             (``api.ws_flow_rate_limit_per_s``, see :func:`ws_flow_rate_from_config`).
         evidence: Writes the per-alert pcap for ``GET /alerts/{id}/evidence``. Without it that
             route answers 503.
+        self_exes: Exe paths of HomeSOC itself, which ``POST /alerts/{id}/quarantine`` refuses
+            (#69). Defaults to :func:`agent.scoring.own_executables`.
     """
     fw = dict(firewall_fns) if firewall_fns is not None else default_firewall()
+    own_exes = frozenset(scoring.own_executables() if self_exes is None else self_exes)
     trusted = allowlist if allowlist is not None else config_module.load_allowlist()
     send = publish or _no_publish
     started = clock()
@@ -505,6 +510,11 @@ def create_app(
             raise HTTPException(409, f"The exe path of {alert.process} is unknown; "
                                      "it cannot be quarantined")
         exe_name = PureWindowsPath(exe_path).name
+        if scoring.is_own_executable(exe_path, own_exes):
+            # #69: blocking the interpreter HomeSOC runs on would cut off HomeSOC itself.
+            raise HTTPException(409, f"{exe_name} is the program MoCat itself runs on; "
+                                     "quarantining it would block MoCat too, so it is never "
+                                     "quarantined")
         if alert.process in trusted or exe_name in trusted:
             raise HTTPException(409, f"{exe_name} is on the trusted apps list and is never "
                                      "quarantined")
