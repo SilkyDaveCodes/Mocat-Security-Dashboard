@@ -13,6 +13,8 @@ capture:
   port_pid_cache_ttl_s: 2 # reuse one psutil port->PID snapshot this long (flows with no process name)
   port_poll_interval_s: 0.05 # record port->PID owners this often, so short connections keep their app
   port_history_s: 60      # remember each port's last owner this long (flows arrive after they close)
+  endpoint_fallback: true # port never seen -> the one app seen on the same remote IP:port (outbound, #68)
+  nfstream_process_visibility: false # NFStream's own process helper (crashes on Windows, #68); off = port history only
 
 calibration:
   minutes: 10             # anomaly calibration period (10 min for the demo, §6.3)

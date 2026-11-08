@@ -27,7 +27,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Iterable
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from agent import config
 from agent.bus import Bus
@@ -42,6 +42,9 @@ NFSTREAM_UNKNOWN_PIDS: frozenset[int] = frozenset({0, -1})  # NFStream's "no PID
 DEFAULT_PORT_PID_CACHE_TTL_S = 2.0  # used when config.yaml lacks capture.port_pid_cache_ttl_s
 DEFAULT_PORT_POLL_INTERVAL_S = 0.05  # used when config.yaml lacks capture.port_poll_interval_s
 DEFAULT_PORT_HISTORY_S = 60.0  # used when config.yaml lacks capture.port_history_s
+# Used when config.yaml lacks capture.nfstream_process_visibility / capture.endpoint_fallback.
+DEFAULT_NFSTREAM_PROCESS_VISIBILITY = False
+DEFAULT_ENDPOINT_FALLBACK = True
 
 # IP protocol number -> socket type, for matching a flow to a psutil connection.
 _SOCK_TYPE_BY_PROTOCOL: dict[int, int] = {6: socket.SOCK_STREAM, 17: socket.SOCK_DGRAM}
@@ -49,7 +52,13 @@ _SOCK_TYPE_BY_PROTOCOL: dict[int, int] = {6: socket.SOCK_STREAM, 17: socket.SOCK
 # §6.1 NFStreamer settings that are fixed by the spec (interface and timeouts come from config).
 # n_dissections is deliberately NOT passed: its default (20) is what fills requested_server_name.
 STATISTICAL_ANALYSIS = True
-SYSTEM_VISIBILITY_MODE = 1  # 1 = report the process name/PID that owns each flow
+# NFStream's system_visibility_mode: 1 starts its own process-visibility helper process, 0 doesn't.
+# Off by default (capture.nfstream_process_visibility, #68): on Windows that helper crashed at
+# start-up (WinError 6 in channel.put), it never names a UDP flow (psutil lists Windows UDP
+# sockets without a remote address, and it only matches sockets that have one), and it names a
+# TIME_WAIT socket "System Idle Process" (PID 0). HomeSOC's own PortHistory does the job instead.
+SYSTEM_VISIBILITY_ON = 1
+SYSTEM_VISIBILITY_OFF = 0
 
 _DIRECTIONS = ("bidirectional", "src2dst", "dst2src")
 _STATS = ("min", "mean", "stddev", "max")
@@ -156,12 +165,18 @@ def default_process_fallback(flow: Any) -> tuple[str, int] | None:
 
 
 def _process_of(flow: Any, process_fallback: ProcessFallback | None) -> tuple[str, int]:
+    fallback = process_fallback or default_process_fallback
     name = _str_or_none(getattr(flow, "system_process_name", None))
     if name is None:
-        resolved = (process_fallback or default_process_fallback)(flow)
+        resolved = fallback(flow)
         return resolved if resolved is not None else (UNKNOWN_PROCESS, UNKNOWN_PID)
     pid = _int(getattr(flow, "system_process_pid", None), UNKNOWN_PID)
-    return name, (UNKNOWN_PID if pid in NFSTREAM_UNKNOWN_PIDS else pid)
+    if pid in NFSTREAM_UNKNOWN_PIDS:
+        # A name without a PID: NFStream saw the socket in TIME_WAIT (PID 0, "System Idle
+        # Process"), not the app that used it. Ask the fallback first (#68).
+        resolved = fallback(flow)
+        return resolved if resolved is not None else (name, UNKNOWN_PID)
+    return name, pid
 
 
 def extract_features(flow: Any) -> dict[str, Any]:
@@ -228,10 +243,29 @@ def make_streamer(cfg: dict[str, Any]) -> Any:
     return NFStreamer(
         source=capture_cfg["interface"],
         statistical_analysis=STATISTICAL_ANALYSIS,
-        system_visibility_mode=SYSTEM_VISIBILITY_MODE,
+        system_visibility_mode=system_visibility_mode(cfg),
         idle_timeout=capture_cfg["idle_timeout"],
         active_timeout=capture_cfg["active_timeout"],
     )
+
+
+def system_visibility_mode(cfg: dict[str, Any]) -> int:
+    """NFStream's ``system_visibility_mode`` from ``capture.nfstream_process_visibility``.
+
+    Off (:data:`SYSTEM_VISIBILITY_OFF`) unless the key is true; logs which source names the
+    flows' processes, once per streamer.
+    """
+    enabled = bool(cfg.get("capture", {}).get(
+        "nfstream_process_visibility", DEFAULT_NFSTREAM_PROCESS_VISIBILITY))
+    if enabled:
+        logger.warning(
+            "NFStream process visibility is on (capture.nfstream_process_visibility): its "
+            "helper process is known to crash on Windows (#68); HomeSOC's port history still "
+            "names flows it leaves empty"
+        )
+        return SYSTEM_VISIBILITY_ON
+    logger.info("NFStream process visibility is off; HomeSOC's port history names each flow's app")
+    return SYSTEM_VISIBILITY_OFF
 
 
 class LocalAddresses:
@@ -261,19 +295,60 @@ class LocalAddresses:
         return self._ips
 
 
-def _socket_owners() -> dict[tuple[int, int], int]:
-    """``(socket type, local port) -> PID`` for every socket psutil can see right now.
+PortKey = tuple[int, int]
+"""``(socket type, local port)``."""
 
-    Raises whatever ``psutil.net_connections`` raises (callers log it).
+EndpointKey = tuple[int, str, int]
+"""``(socket type, canonical remote IP, remote port)``."""
+
+
+class SocketSighting(NamedTuple):
+    """One socket psutil listed: who owns which local port, and the remote end if it has one."""
+
+    sock_type: int
+    port: int
+    pid: int
+    remote: EndpointKey | None = None
+
+
+def _endpoint_key(sock_type: int, ip: Any, port: Any) -> EndpointKey | None:
+    """Canonical endpoint key, or ``None`` for no / unspecified address or port 0."""
+    addr = parse_ip(str(ip)) if ip else None
+    port_no = _int(port)
+    if addr is None or addr.is_unspecified or port_no <= 0:
+        return None
+    return (sock_type, str(addr), port_no)
+
+
+def _socket_table() -> list[SocketSighting]:
+    """Every socket psutil can see right now that has an owner PID and a local port.
+
+    The remote end is kept when psutil reports one (connected TCP sockets; on Windows psutil
+    never reports one for UDP). Raises whatever ``psutil.net_connections`` raises (callers log it).
     """
     import psutil  # lazy: only live capture needs it
 
-    ports: dict[tuple[int, int], int] = {}
+    table: list[SocketSighting] = []
     for conn in psutil.net_connections(kind="inet"):
         port = getattr(conn.laddr, "port", None) if conn.laddr else None
         if conn.pid is None or conn.pid in NFSTREAM_UNKNOWN_PIDS or not port:
             continue
-        ports.setdefault((int(conn.type), int(port)), int(conn.pid))
+        sock_type = int(conn.type)
+        raddr = conn.raddr or None
+        remote = (_endpoint_key(sock_type, getattr(raddr, "ip", None), getattr(raddr, "port", 0))
+                  if raddr else None)
+        table.append(SocketSighting(sock_type, int(port), int(conn.pid), remote))
+    return table
+
+
+def _socket_owners() -> dict[PortKey, int]:
+    """``(socket type, local port) -> PID`` for every socket psutil can see right now.
+
+    Raises whatever ``psutil.net_connections`` raises (callers log it).
+    """
+    ports: dict[PortKey, int] = {}
+    for sighting in _socket_table():
+        ports.setdefault((sighting.sock_type, sighting.port), sighting.pid)
     return ports
 
 
@@ -288,6 +363,12 @@ class PortHistory:
     the process is still alive. :meth:`lookup` returns the most recent owner seen within
     ``keep_s``. Connections shorter than ``poll_s`` can still be missed.
 
+    It also remembers which processes were seen talking to each remote endpoint
+    (``(socket type, remote IP, remote port)``, sockets psutil lists with a remote address) over
+    the same ``keep_s``: :meth:`lookup_endpoint` names the one process seen on an endpoint, so a
+    check-in that opened and closed between two polls still gets the app that checks in there
+    every time (#68). Two or more processes on the endpoint -> no answer (in doubt, unknown).
+
     Thread-safe. Never raises from the poll loop: a psutil error is logged once and retried.
     """
 
@@ -296,15 +377,17 @@ class PortHistory:
         poll_s: float,
         keep_s: float,
         clock: Callable[[], float] = time.monotonic,
-        read: Callable[[], dict[tuple[int, int], int]] | None = None,
+        read: Callable[[], Iterable[SocketSighting]] | None = None,
     ) -> None:
         if poll_s <= 0 or keep_s <= 0:
             raise ValueError("port history poll and keep times must be > 0")
         self._poll_s = poll_s
         self._keep_s = keep_s
         self._clock = clock
-        self._read = read or (lambda: _socket_owners())  # looked up at call time: patchable
-        self._seen: dict[tuple[int, int], tuple[int, str | None, float]] = {}
+        self._read = read or (lambda: _socket_table())  # looked up at call time: patchable
+        self._seen: dict[PortKey, tuple[int, str | None, float]] = {}
+        # endpoint -> {pid: (name, last seen)}
+        self._endpoints: dict[EndpointKey, dict[int, tuple[str | None, float]]] = {}
         self._names: dict[int, str | None] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -314,7 +397,7 @@ class PortHistory:
     def poll_once(self) -> None:
         """Record the current owner of every port, then forget sightings older than ``keep_s``."""
         try:
-            owners = self._read()
+            sightings = list(self._read())
         except Exception as exc:  # AccessDenied, OSError, ...
             log = logger.debug if self._failing else logger.warning
             log("psutil.net_connections failed (%s); port history not updated", exc)
@@ -322,26 +405,51 @@ class PortHistory:
             return
         self._failing = False
         now = self._clock()
-        live_pids = set(owners.values())
+        live_pids = {s.pid for s in sightings}
         for pid in live_pids - self._names.keys():
             self._names[pid] = _process_name(pid)  # read once per PID, while it is alive
         with self._lock:
+            owners: dict[PortKey, int] = {}
+            for s in sightings:
+                owners.setdefault((s.sock_type, s.port), s.pid)
+                if s.remote is not None:
+                    self._endpoints.setdefault(s.remote, {})[s.pid] = (self._names.get(s.pid), now)
             for key, pid in owners.items():
                 self._seen[key] = (pid, self._names.get(pid), now)
             cutoff = now - self._keep_s
             for key in [k for k, (_, _, seen) in self._seen.items() if seen < cutoff]:
                 del self._seen[key]
+            for endpoint, pids in list(self._endpoints.items()):
+                for pid in [p for p, (_, seen) in pids.items() if seen < cutoff]:
+                    del pids[pid]
+                if not pids:
+                    del self._endpoints[endpoint]
             remembered = {pid for pid, _, _ in self._seen.values()}
+            remembered.update(pid for pids in self._endpoints.values() for pid in pids)
         for pid in [p for p in self._names if p not in remembered]:
             del self._names[pid]
 
-    def lookup(self, key: tuple[int, int]) -> tuple[str | None, int] | None:
+    def lookup(self, key: PortKey) -> tuple[str | None, int] | None:
         """``(name, pid)`` of the last process seen on ``key`` within ``keep_s``, else ``None``."""
         with self._lock:
             entry = self._seen.get(key)
         if entry is None or entry[2] < self._clock() - self._keep_s:
             return None
         pid, name, _ = entry
+        return name, pid
+
+    def lookup_endpoint(self, endpoint: EndpointKey) -> tuple[str | None, int] | None:
+        """``(name, pid)`` of the only process seen talking to ``endpoint`` within ``keep_s``.
+
+        ``None`` if none was seen, or if two or more were (ambiguous: never guess).
+        """
+        cutoff = self._clock() - self._keep_s
+        with self._lock:
+            pids = {pid: name for pid, (name, seen) in self._endpoints.get(endpoint, {}).items()
+                    if seen >= cutoff}
+        if len(pids) != 1:
+            return None
+        ((pid, name),) = pids.items()
         return name, pid
 
     def start(self) -> None:
@@ -375,7 +483,11 @@ class PortPidResolver:
     One ``net_connections`` snapshot (port -> PID, plus PID -> name) is cached for ``ttl_s``
     seconds, so a burst of flows costs one psutil call. After the TTL the next lookup refreshes it.
     If the snapshot has no owner (the connection already closed) and a :class:`PortHistory` is
-    given, its most recent sighting of the port is used.
+    given, its most recent sighting of the port is used. If the port was never seen either (a
+    connection that lived between two polls) and ``endpoint_fallback`` is on, an **outbound**
+    flow gets the one process the history saw talking to the same remote endpoint
+    (:meth:`PortHistory.lookup_endpoint`, #68): a beacon's check-ins all go to one IP and port,
+    so one sighting names them all. Never for inbound flows (the remote port is the attacker's).
 
     Never raises: a psutil error (e.g. ``AccessDenied`` on macOS) is logged and the flow keeps
     the defaults. If the PID is found but its name can't be read (process gone / access
@@ -388,39 +500,49 @@ class PortPidResolver:
         local_addresses: LocalAddresses,
         clock: Callable[[], float] = time.monotonic,
         history: PortHistory | None = None,
+        endpoint_fallback: bool = DEFAULT_ENDPOINT_FALLBACK,
     ) -> None:
         self._ttl_s = ttl_s
         self._local_addresses = local_addresses
         self._clock = clock
         self._history = history
-        self._ports: dict[tuple[int, int], int] = {}
+        self._endpoint_fallback = endpoint_fallback
+        self._ports: dict[PortKey, int] = {}
         self._names: dict[int, str | None] = {}
         self._read_at: float | None = None
         self._failing = False
 
     def __call__(self, flow: Any) -> tuple[str, int] | None:
-        key = self._socket_key(flow)
-        if key is None:
+        found = self._socket_key(flow)
+        if found is None:
             return None
+        key, outbound = found
         pid = self._snapshot().get(key)
         if pid is not None:
             return (self._name_of(pid) or UNKNOWN_PROCESS, pid)
-        seen = self._history.lookup(key) if self._history is not None else None
+        if self._history is None:
+            return None
+        seen = self._history.lookup(key)
+        if seen is None and self._endpoint_fallback and outbound:
+            endpoint = _endpoint_key(key[0], getattr(flow, "dst_ip", None),
+                                     getattr(flow, "dst_port", 0))
+            seen = self._history.lookup_endpoint(endpoint) if endpoint is not None else None
         if seen is None:
             return None
         name, pid = seen
         return (name or UNKNOWN_PROCESS, pid)
 
-    def _socket_key(self, flow: Any) -> tuple[int, int] | None:
+    def _socket_key(self, flow: Any) -> tuple[PortKey, bool] | None:
+        """``((socket type, local port), outbound?)``, or ``None`` if the flow has no port."""
         sock_type = _SOCK_TYPE_BY_PROTOCOL.get(_int(getattr(flow, "protocol", 0)))
         if sock_type is None:
             return None
         src_ip = str(getattr(flow, "src_ip", "") or "")
         outbound = direction_of(src_ip, self._local_addresses.get()) == "outbound"
         port = _int(getattr(flow, "src_port" if outbound else "dst_port", 0))
-        return (sock_type, port) if port > 0 else None
+        return ((sock_type, port), outbound) if port > 0 else None
 
-    def _snapshot(self) -> dict[tuple[int, int], int]:
+    def _snapshot(self) -> dict[PortKey, int]:
         now = self._clock()
         if self._read_at is None or now - self._read_at >= self._ttl_s:
             self._ports = self._read_ports()
@@ -428,7 +550,7 @@ class PortPidResolver:
             self._read_at = now  # also after an error: retry only once the TTL has passed
         return self._ports
 
-    def _read_ports(self) -> dict[tuple[int, int], int]:
+    def _read_ports(self) -> dict[PortKey, int]:
         try:
             ports = _socket_owners()
         except Exception as exc:  # AccessDenied (macOS without root), OSError, ...
@@ -473,7 +595,8 @@ def run(
     defaults to a :class:`PortPidResolver` whose cache lives ``capture.port_pid_cache_ttl_s``
     seconds (:data:`DEFAULT_PORT_PID_CACHE_TTL_S` if the key is missing), backed by a
     :class:`PortHistory` (``capture.port_poll_interval_s`` / ``capture.port_history_s``) that
-    runs while the capture runs, so short connections keep their process.
+    runs while the capture runs, so short connections keep their process, and with the
+    remote-endpoint fallback on unless ``capture.endpoint_fallback`` is false.
 
     Returns:
         The number of events published.
@@ -489,7 +612,11 @@ def run(
             capture_cfg.get("port_history_s", DEFAULT_PORT_HISTORY_S),
         )
         history.start()
-        process_fallback = PortPidResolver(ttl_s, local_addresses, history=history)
+        process_fallback = PortPidResolver(
+            ttl_s, local_addresses, history=history,
+            endpoint_fallback=bool(
+                capture_cfg.get("endpoint_fallback", DEFAULT_ENDPOINT_FALLBACK)),
+        )
     published = 0
     try:
         for flow in streamer_factory(cfg):

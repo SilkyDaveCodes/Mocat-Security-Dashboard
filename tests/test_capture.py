@@ -331,7 +331,7 @@ def test_make_streamer_uses_exactly_the_spec_settings(fake_nfstream: MagicMock) 
     fake_nfstream.assert_called_once_with(
         source="Ethernet",
         statistical_analysis=True,
-        system_visibility_mode=1,
+        system_visibility_mode=0,  # NFStream's process helper is off by default (#68)
         idle_timeout=10,
         active_timeout=30,
     )
@@ -348,7 +348,7 @@ def test_make_streamer_reads_interface_and_timeouts_from_config(
     assert kwargs == {
         "source": "Wi-Fi",
         "statistical_analysis": True,
-        "system_visibility_mode": 1,
+        "system_visibility_mode": 0,  # key missing -> off (#68)
         "idle_timeout": 3,
         "active_timeout": 7,
     }

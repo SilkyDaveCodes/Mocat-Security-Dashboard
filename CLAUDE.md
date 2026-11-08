@@ -198,9 +198,14 @@ class Action:
 ### 6.1 `agent/capture.py` (CE)
 - Use `nfstream.NFStreamer` on the interface from `config.yaml` (the name shown in Wireshark's
   interface list).
-- Settings: `statistical_analysis=True`, `system_visibility_mode=1` (process name/PID),
+- Settings: `statistical_analysis=True`, `system_visibility_mode=0`,
   `idle_timeout=10`, `active_timeout=30`. **Keep `n_dissections` at its default (20)**, because
-  `requested_server_name` (the DNS/TLS hostname) needs it.
+  `requested_server_name` (the DNS/TLS hostname) needs it. `system_visibility_mode` is 1 only if
+  `capture.nfstream_process_visibility` is true (default false, #68): NFStream's helper process
+  crashed on Windows (`system_socket_worflow` → `channel.put` → `WinError 6`), never names a UDP
+  flow (psutil lists Windows UDP sockets with no remote address; the helper only matches sockets
+  that have one) and names TIME_WAIT sockets "System Idle Process" (PID 0). HomeSOC's
+  `PortHistory` names every flow instead. A name with PID 0/-1 asks the fallback first.
 - Map each NFlow → `FlowEvent`. `direction="outbound"` if `src_ip` is **one of this PC's own
   addresses** (from `psutil.net_if_addrs()`, re-read every `capture.local_ips_refresh_s`) or
   loopback; otherwise `"inbound"`. "Local" means *this host*, not "any private IP": a flow started
@@ -212,6 +217,13 @@ class Action:
   `capture.port_poll_interval_s` (0.05 s) and remembers each port's last (PID, name) for
   `capture.port_history_s` (60 s); the resolver uses it when the live snapshot has no owner.
   Found in #58 (fake-malware flows were `unknown`, so never quarantined).
+- A socket that lived between two polls is never seen by port (#68: an answered lab DNS lookup
+  lives ~1 ms; a check-in ~20 ms). `PortHistory` also remembers which PIDs it saw on each remote
+  endpoint `(socket type, remote IP, remote port)` for `port_history_s`; with
+  `capture.endpoint_fallback` (on), an **outbound** flow whose port was never seen gets the
+  **one** process seen on its `dst_ip:dst_port` (two or more → unknown; never for inbound).
+  Order: live snapshot → port history → endpoint. Windows UDP sockets have no remote address,
+  so UDP is attributed by port only.
 - Put events on the bus. Never block the capture loop on slow work.
 
 ### 6.2 `agent/procinfo.py` (CE)
@@ -553,10 +565,12 @@ sudo dnsmasq -C lab/dnsmasq.conf    # answers all DNS lookups inside the lab
 1. **No real malware, ever.** `lab/fake_malware/freegamecheats.py` is a harmless simulator. It may only:
    - resolve made-up random-looking domain names (through the lab DNS: each query is sent
      straight to `LAB_C2`:53 from its own UDP socket, never through the Windows resolver, so
-     Windows' DNS settings are left alone and the lookups are this process's own flows),
+     Windows' DNS settings are left alone and the lookups are this process's own flows; each
+     socket stays open ≥ `DNS_SOCKET_MIN_LIFETIME_S` (0.25 s) so the agent's port poll sees it, #68),
    - send HTTP GET check-ins to `LAB_C2 = "192.168.56.20"` every 5 s, **opening a new connection each
      time** (no keep-alive, so each check-in is its own flow),
-   - POST ~20 MB of random bytes to the lab C2 once.
+   - POST ~20 MB of random bytes to the lab C2 once (the first check-in then starts one interval
+     after the upload started: same C2 port, so it is one more beacon start, #68).
    It must refuse to run unless `LAB_C2` is inside `192.168.56.0/24` **and** the env var
    `HOMESOC_LAB=1` is set. No persistence, no file encryption, no credential access, no spreading, no
    anti-analysis tricks.
