@@ -536,6 +536,7 @@ Remove-NetFirewallRule -Group "HomeSOC"
 # package (models trained first; see README "Building the installer")
 .venv\Scripts\pyinstaller --noconfirm installer\homesoc.spec      # → dist\HomeSOC\
 #  then compile installer\homesoc.iss with Inno Setup (ISCC.exe) → dist\HomeSOC-Setup.exe
+#  (README finds ISCC.exe per machine, Program Files (x86), or per user, %LOCALAPPDATA%\Programs)
 ```
 
 Packaging (ticket #50, `tests/test_installer.py`): the spec bundles `config.yaml`,

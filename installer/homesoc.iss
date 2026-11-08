@@ -1,6 +1,7 @@
 ; Inno Setup 6 script for HomeSOC (CLAUDE.md §4, §8). Build the PyInstaller bundle first:
 ;     .venv\Scripts\pyinstaller installer\homesoc.spec      -> dist\HomeSOC\
-; then compile this file (Inno Setup Compiler, or: ISCC.exe installer\homesoc.iss)
+; then compile this file (Inno Setup Compiler, or: ISCC.exe installer\homesoc.iss; README finds a
+; per-machine or per-user Inno Setup install)
 ;     -> dist\HomeSOC-Setup.exe
 ;
 ; Installs into C:\Program Files\HomeSOC (read-only):
@@ -28,7 +29,7 @@
 AppId={{B79FCC82-AF9F-4E78-B414-33E688145F75}
 AppName={#AppDisplayName}
 AppVersion={#AppVersion}
-AppPublisher=HomeSOC hackathon team
+AppPublisher=MoCat hackathon team
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppDisplayName}
 DisableProgramGroupPage=yes
@@ -60,7 +61,7 @@ Name: "{commonstartup}\{#AppDisplayName}"; Filename: "{app}\{#AppExe}"
 
 [Run]
 ; Agent: register the elevated startup task (no 72 h time limit, restart on failure) and start it.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$a = New-ScheduledTaskAction -Execute '{app}\{#AgentExe}'; $t = New-ScheduledTaskTrigger -AtStartup; $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); Register-ScheduledTask -TaskName '{#AgentTask}' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null; Start-ScheduledTask -TaskName '{#AgentTask}'"""; Flags: runhidden waituntilterminated; StatusMsg: "Starting the HomeSOC agent..."
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$a = New-ScheduledTaskAction -Execute '{app}\{#AgentExe}'; $t = New-ScheduledTaskTrigger -AtStartup; $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); Register-ScheduledTask -TaskName '{#AgentTask}' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null; Start-ScheduledTask -TaskName '{#AgentTask}'"""; Flags: runhidden waituntilterminated; StatusMsg: "Starting the MoCat agent..."
 ; App: as the user who ran setup, not elevated.
 Filename: "{app}\{#AppExe}"; Description: "Open {#AppDisplayName}"; Flags: nowait postinstall runasoriginaluser skipifsilent
 
@@ -76,7 +77,7 @@ function InitializeSetup(): Boolean;
 begin
   Result := True;
   if not DirExists(ExpandConstant('{sys}\Npcap')) then
-    Result := MsgBox('Npcap was not found. HomeSOC needs it to see network traffic: install ' +
+    Result := MsgBox('Npcap was not found. MoCat needs it to see network traffic: install ' +
       'Wireshark (it includes Npcap) first.' + #13#10#13#10 + 'Continue anyway?',
       mbConfirmation, MB_YESNO) = IDYES;
 end;

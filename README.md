@@ -65,7 +65,9 @@ Live runbook for the two lab VMs (portscan -> T1046 + IP block, bruteforce -> T1
 
 On the Windows build VM, from the repo root. The spec bundles the models **from `models\`**, so
 they must be there first: train them (§8) or copy the shared `dga.joblib` / `flow.joblib` in
-(they are not in git). Install Inno Setup 6 once.
+(they are not in git). Install Inno Setup 6 once: per machine (the installer from jrsoftware.org,
+`C:\Program Files (x86)\Inno Setup 6`) or per user (`winget install JRSoftware.InnoSetup`,
+`%LOCALAPPDATA%\Programs\Inno Setup 6`). The commands below find the Inno Setup compiler in either place.
 
 ```powershell
 .venv\Scripts\pip install pyinstaller
@@ -75,7 +77,12 @@ they must be there first: train them (§8) or copy the shared `dga.joblib` / `fl
 Test-Path models\dga.joblib, models\flow.joblib   # both True
 .venv\Scripts\pyinstaller --noconfirm installer\homesoc.spec
 #   -> dist\HomeSOC\  (HomeSOC-Agent.exe, HomeSOC.exe, _internal\)
-& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\homesoc.iss
+# ISCC.exe: per-machine or per-user Inno Setup 6 install, whichever exists
+$iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+          "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $iscc) { throw "ISCC.exe not found: install Inno Setup 6 (winget install JRSoftware.InnoSetup)" }
+& $iscc installer\homesoc.iss
 #   -> dist\HomeSOC-Setup.exe
 ```
 

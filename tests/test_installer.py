@@ -524,6 +524,87 @@ def test_installer_keeps_the_internal_homesoc_names() -> None:
     assert uninstall_problems(text) == []
 
 
+# Text the installer shows to the user (#67). It may name the product "MoCat HomeSOC" or an exe
+# file, never "HomeSOC" on its own; internal names (AppId, folders, task, group) are not shown.
+USER_VISIBLE_SETUP_KEYS = (
+    "AppName", "AppVerName", "AppPublisher", "AppComments", "AppContact", "AppCopyright",
+    "UninstallDisplayName", "DefaultGroupName", "VersionInfoCompany", "VersionInfoDescription",
+    "VersionInfoProductName", "VersionInfoCopyright",
+)
+USER_VISIBLE_ENTRY_KEYS = ("StatusMsg", "Description", "Comment")
+ALLOWED_HOMESOC_TEXT = ("MoCat HomeSOC", "HomeSOC-Agent.exe", "HomeSOC.exe")
+
+
+def user_visible_texts(text: str) -> list[tuple[str, str]]:
+    """(where, text) for every string of an .iss that setup or uninstall can show to the user."""
+    sections, _ = parse_iss(text)
+    setup = dict(line.split("=", 1) for line in sections["Setup"])
+    out = [(f"[Setup] {k}", setup[k]) for k in USER_VISIBLE_SETUP_KEYS if k in setup]
+    for sec in ("Run", "UninstallRun", "Icons", "Tasks", "Components", "Types"):
+        for e in entries(sec, text):
+            out += [(f"[{sec}] {k}", e[k]) for k in USER_VISIBLE_ENTRY_KEYS if k in e]
+    # a shortcut's name (last path part) is what the Start menu / Startup folder shows
+    out += [("[Icons] Name", e["Name"].rsplit("\\", 1)[-1]) for e in entries("Icons", text)]
+    for sec in ("Messages", "CustomMessages"):
+        out += [(f"[{sec}]", line.split("=", 1)[-1]) for line in sections.get(sec, [])]
+    # [Code]: every Pascal string literal (message boxes, PrepareToInstall's returned text, ...)
+    code = "\n".join(sections.get("Code", []))
+    out += [("[Code]", lit.replace("''", "'"))
+            for lit in re.findall(r"'((?:[^']|'')*)'", code)]
+    return out
+
+
+def stray_homesoc(text: str) -> list[tuple[str, str]]:
+    """The user-visible strings that still say "HomeSOC" outside the allowed names."""
+    bad = []
+    for where, value in user_visible_texts(text):
+        rest = value
+        for allowed in ALLOWED_HOMESOC_TEXT:
+            rest = rest.replace(allowed, "")
+        if "homesoc" in rest.casefold():
+            bad.append((where, value))
+    return bad
+
+
+def test_installer_text_shown_to_the_user_says_mocat() -> None:
+    text = ISS.read_text(encoding="utf-8")
+    assert stray_homesoc(text) == []
+    setup = _setup_section(text)
+    assert setup["AppPublisher"] == "MoCat hackathon team"
+    [agent] = [e for e in entries("Run") if "HomeSOC-Agent.exe" in _command(e)]
+    assert agent["StatusMsg"] == "Starting the MoCat agent..."
+    found = dict(user_visible_texts(text))
+    assert found["[Setup] AppPublisher"] == "MoCat hackathon team"
+    assert any("MoCat needs it" in v for w, v in user_visible_texts(text) if w == "[Code]")
+
+
+@pytest.mark.parametrize(("old", "new"), [
+    ("AppPublisher=MoCat hackathon team", "AppPublisher=HomeSOC hackathon team"),
+    ('StatusMsg: "Starting the MoCat agent..."', 'StatusMsg: "Starting the HomeSOC agent..."'),
+    ("MoCat needs it to see network traffic", "HomeSOC needs it to see network traffic"),
+    ('Description: "Open {#AppDisplayName}"', 'Description: "Open HomeSOC"'),
+    ("[Code]", "[Messages]\nSetupAppTitle=HomeSOC Setup\n\n[Code]"),
+    ("[Code]", "[CustomMessages]\nAgentStarting=Starting homesoc\n\n[Code]"),
+    ('UninstallDisplayName={#AppDisplayName}', "UninstallDisplayName={#AppName}"),
+    ("  Result := '';", "  Result := 'Close HomeSOC first.';"),
+])
+def test_user_visible_check_catches_homesoc_wording(old: str, new: str) -> None:
+    # Mutation check: put the pre-#67 wording (or a new HomeSOC string) back, the check must fail.
+    original = ISS.read_text(encoding="utf-8")
+    assert old in original
+    assert stray_homesoc(original.replace(old, new, 1)) != []
+
+
+def test_rebrand_left_the_internal_names_shown_nowhere_as_text() -> None:
+    # The internal names are still there, just not as user-visible text (CLAUDE.md §6.7).
+    text = ISS.read_text(encoding="utf-8")
+    _, defines = parse_iss(text)
+    assert defines["AppName"] == "HomeSOC"  # used for {autopf}\HomeSOC only
+    assert "Remove-NetFirewallRule -Group 'HomeSOC'" in text
+    assert "RemoveHomeSOCFirewallRules" in text
+    assert "/IM HomeSOC-Agent.exe" in " ".join(_command(e) for e in entries("UninstallRun"))
+
+
 def test_iss_parser_unquotes_inno_strings() -> None:
     entry = _split_entry('Filename: "a.exe"; Parameters: "-Command ""x; y"""; Flags: runhidden')
     assert entry == {"Filename": "a.exe", "Parameters": '-Command "x; y"', "Flags": "runhidden"}
@@ -552,7 +633,7 @@ def _readme_section(heading_word: str) -> str:
 def test_readme_documents_the_build() -> None:
     build = _readme_section("installer")
     assert "pyinstaller --noconfirm installer\\homesoc.spec" in build
-    assert "ISCC.exe\" installer\\homesoc.iss" in build
+    assert "& $iscc installer\\homesoc.iss" in build  # ISCC.exe is looked up (#67)
     assert "HomeSOC-Setup.exe" in build
     assert "%PROGRAMDATA%\\HomeSOC" in build  # where the writable data goes
 
@@ -563,6 +644,71 @@ def test_readme_build_steps_match_the_spec_and_iss() -> None:
     assert build.index("models\\flow.joblib") < build.index("pyinstaller --noconfirm")
     assert build.index("pyinstaller --noconfirm") < build.index("ISCC.exe")
     assert "mocat.ico" in build and "make_icon.py" in build
+
+
+ISCC_PER_MACHINE = "${env:ProgramFiles(x86)}\\Inno Setup 6\\ISCC.exe"
+ISCC_PER_USER = "$env:LOCALAPPDATA\\Programs\\Inno Setup 6\\ISCC.exe"
+
+
+def _readme_iscc_lookup() -> str:
+    """The README's PowerShell lines that pick ISCC.exe: ``$iscc = ...`` through the error."""
+    lines = _readme_section("installer").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("$iscc ="))
+    end = next(i for i, line in enumerate(lines) if line.startswith("if (-not $iscc)"))
+    return "\n".join(lines[start:end + 1])
+
+
+def test_readme_finds_iscc_per_machine_or_per_user() -> None:
+    # #67: winget installs Inno Setup per user; one hard-coded path made the build step fail.
+    build = _readme_section("installer")
+    lookup = _readme_iscc_lookup()
+    candidates = re.findall(r'"([^"]*ISCC\.exe)"', lookup)
+    assert candidates == [ISCC_PER_MACHINE, ISCC_PER_USER]
+    assert "Where-Object { Test-Path $_ }" in lookup and "Select-Object -First 1" in lookup
+    assert "throw" in lookup  # a clear error when neither exists
+    # ISCC is run only through the lookup, never from one literal path
+    assert not re.search(r'&\s*"[^"]*ISCC\.exe"', build)
+    assert build.index("$iscc =") < build.index("& $iscc installer\\homesoc.iss")
+
+
+@pytest.mark.parametrize(("installed", "expected"), [
+    (("machine",), "machine"),
+    (("user",), "user"),
+    (("machine", "user"), "machine"),
+    ((), None),
+])
+def test_readme_iscc_lookup_runs_in_powershell(installed: tuple[str, ...], expected: str | None,
+                                               tmp_path: Path) -> None:
+    # Runs the README's own lines in Windows PowerShell with fake install folders.
+    import os
+    import shutil
+    import subprocess
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell not installed")
+    roots = {"machine": tmp_path / "pf86", "user": tmp_path / "local"}
+    exes = {"machine": roots["machine"] / "Inno Setup 6" / "ISCC.exe",
+            "user": roots["user"] / "Programs" / "Inno Setup 6" / "ISCC.exe"}
+    for where in installed:
+        exes[where].parent.mkdir(parents=True)
+        exes[where].write_bytes(b"")
+    script = tmp_path / "lookup.ps1"
+    script.write_text(_readme_iscc_lookup() + '\nWrite-Output "FOUND=$iscc"\n', encoding="utf-8")
+    env = dict(os.environ)
+    for key in [k for k in env if k.upper() in ("PROGRAMFILES(X86)", "LOCALAPPDATA")]:
+        del env[key]
+    env["ProgramFiles(x86)"] = str(roots["machine"])
+    env["LOCALAPPDATA"] = str(roots["user"])
+    res = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                          "Bypass", "-File", str(script)],
+                         capture_output=True, text=True, env=env, timeout=120)
+    if expected is None:
+        assert res.returncode != 0
+        assert "ISCC.exe not found" in res.stdout + res.stderr
+        assert "FOUND=" not in res.stdout
+    else:
+        assert res.returncode == 0, res.stderr
+        assert f"FOUND={exes[expected]}" in res.stdout
 
 
 def test_readme_says_the_defender_exclusion_is_test_vm_only() -> None:
