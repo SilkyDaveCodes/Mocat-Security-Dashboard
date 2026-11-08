@@ -216,15 +216,34 @@ def test_keepalives_would_alert_if_each_flow_counted_as_a_check_in(
 ) -> None:
     """Why ``detectors.beacon.new_connections_only`` is on: with it off, one long-lived
     connection cut into many flows by NFStream (Spotify's pings, a long download) is a
-    'beacon' and normal use raises critical alerts."""
+    'beacon' and normal use raises critical alerts. ``allowlisted_score`` is turned off too,
+    so this shows the keepalive rule on its own."""
     result = replay(fp_recording.load_records(SYNTHETIC_FIXTURE), tmp_path,
-                    beacon_overrides={"new_connections_only": False})
+                    beacon_overrides={"new_connections_only": False, "allowlisted_score": None})
     loud = [a for a in result.alerts if a.severity in MEDIUM_OR_HIGHER]
     assert loud
     assert {s.detector for a in loud for s in a.signals} == {"beacon"}
     assert {"spotify.exe", "chrome.exe"} <= {a.process for a in loud}
     assert result.actions == []  # allowlisted apps: alert only, even in auto mode
     assert no_firewall == []
+
+
+VM_FIXTURE = FIXTURE_DIR / "normal_use_vm.jsonl"
+
+
+@pytest.mark.skipif(not VM_FIXTURE.exists(), reason="no VM recording")
+def test_vm_recording_would_alert_without_the_49_beacon_fixes(
+    tmp_path: Path, no_firewall: list[list[str]]
+) -> None:
+    """Why ``skip_non_unicast`` and ``allowlisted_score`` exist: without them the real hour
+    raised critical beacon alerts on Chrome's ad-server polling and Windows' IGMP/MLD reports."""
+    result = replay(fp_recording.load_records(VM_FIXTURE), tmp_path,
+                    beacon_overrides={"skip_non_unicast": False, "allowlisted_score": None})
+    loud = [a for a in result.alerts if a.severity in MEDIUM_OR_HIGHER]
+    assert {s.detector for a in loud for s in a.signals} == {"beacon"}
+    assert "chrome.exe" in {a.process for a in loud}
+    assert {"224.0.0.22", "ff02::16"} & {s.target for a in loud for s in a.signals}
+    assert result.actions == []  # allowlisted / unknown exe: alert only, even in auto mode
 
 
 def test_replay_harness_catches_malware_spliced_into_normal_use(

@@ -283,6 +283,56 @@ def test_new_connections_only_is_on_in_config(cfg: dict[str, Any]) -> None:
     assert cfg["detectors"]["beacon"]["new_connections_only"] is True
 
 
+# --- what the real VM recording showed (ticket #49) --------------------------------------------
+
+
+@pytest.mark.parametrize("dst_ip", ["224.0.0.22", "ff02::16", "239.255.255.250",
+                                    "255.255.255.255", "0.0.0.0"])
+def test_multicast_and_broadcast_destinations_are_ignored(
+    detector: BeaconDetector, dst_ip: str
+) -> None:
+    # Windows' IGMP/MLD membership reports: no ports, every ~300 s, very regular.
+    starts = jittered_starts(12, 300.0, 5.0)
+    assert all(r == [] for r in feed(detector, starts, dst_ip=dst_ip, dst_port=0,
+                                     src_port=0, protocol=2))
+
+
+def test_multicast_counts_when_skip_non_unicast_is_off(cfg: dict[str, Any]) -> None:
+    cfg["detectors"]["beacon"]["skip_non_unicast"] = False
+    results = feed(BeaconDetector(cfg), jittered_starts(6, 300.0, 5.0), dst_ip="224.0.0.22",
+                   dst_port=0, src_port=0, protocol=2)
+    assert results[-1][0].score == pytest.approx(0.9)
+
+
+def test_allowlisted_app_beacon_scores_below_the_alert_line(
+    detector: BeaconDetector, cfg: dict[str, Any]
+) -> None:
+    # An open tab polling an ad server every 30 s, a new connection each time.
+    results = feed(detector, jittered_starts(20, 30.0, 0.3), dst_ip="104.18.27.193",
+                   dst_port=443, process="chrome.exe")
+    signal = results[-1][0]
+    assert signal.score == pytest.approx(cfg["detectors"]["beacon"]["allowlisted_score"])
+    # Below the alert line even with scoring's ×1.2 unsigned/risky-dir boost.
+    assert signal.score * 1.2 < cfg["scoring"]["alert_threshold"]
+    assert "trusted app" in signal.reasons[-1]
+
+
+def test_allowlist_match_ignores_case_and_other_apps_keep_full_score(
+    cfg: dict[str, Any],
+) -> None:
+    det = BeaconDetector(cfg, allowlist=config.Allowlist(frozenset({"spotify.exe"})))
+    starts = jittered_starts(6, 30.0, 0.3)
+    assert feed(det, starts, process="Spotify.exe")[-1][0].score == pytest.approx(0.3)
+    assert feed(det, starts, process="chrome.exe")[-1][0].score == pytest.approx(0.9)
+    assert feed(det, starts, process=PROC)[-1][0].score == pytest.approx(0.9)
+
+
+def test_allowlisted_score_null_turns_it_off(cfg: dict[str, Any]) -> None:
+    cfg["detectors"]["beacon"]["allowlisted_score"] = None
+    results = feed(BeaconDetector(cfg), jittered_starts(6, 30.0, 0.3), process="chrome.exe")
+    assert results[-1][0].score == pytest.approx(0.9)
+
+
 def test_module_level_process_uses_default_detector(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(beacon, "_default_detector", None)
     results = [beacon.process(flow(ts)) for ts in jittered_starts(6, 5.0, 0.1)]

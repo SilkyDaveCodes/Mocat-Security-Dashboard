@@ -250,6 +250,12 @@ Each detector exposes `def process(event: FlowEvent) -> list[Signal]`.
   connection cut again by NFStream's idle/active timeout (websocket keepalives, long downloads)
   and adds no start. Source port 0 (ICMP) always counts. Found by the FP test (#49,
   `docs/fp-test.md`).
+- Flows to multicast / broadcast / unspecified addresses are ignored
+  (`detectors.beacon.skip_non_unicast`, on): Windows' IGMP/MLD reports every ~5 min.
+- Apps in `paths.allowlist` get `detectors.beacon.allowlisted_score` (0.3, below the alert line;
+  `null` = off) instead of 0.9/0.95: a beacon alone never alerts for a browser (open tabs poll ad
+  servers every 30 s on new connections), but it still adds up with intel/DGA. Both found by the
+  real VM recording (#49).
 
 **`anomaly.py`** (CS + CE)
 - Calibration period (configurable; 10 min for the demo) learns per-process 60-second windows:

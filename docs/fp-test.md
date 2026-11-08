@@ -4,9 +4,10 @@ Goal: an hour of normal use on the PC, replayed through the full pipeline in `au
 raise **no medium-or-higher alert and no firewall action**. The recording stays in the repo as
 a regression test, so a later threshold change can't bring the false positives back.
 
-> **Status: the shipped fixture is SYNTHETIC.** `tests/fixtures/normal_use_synthetic.jsonl` is a
-> generated stand-in until the real one-hour VM recording (`tests/fixtures/normal_use_vm.jsonl`)
-> lands. Real threshold tuning happens against that recording.
+> **Status: both fixtures are in.** `tests/fixtures/normal_use_vm.jsonl` is the real one-hour
+> recording from the Windows 11 VM (~21,900 flows: Chrome, Edge, Spotify, Discord, OneDrive,
+> Windows Update, Defender), recorded 2026-11-07. `normal_use_synthetic.jsonl` stays as a
+> second, generated hour. Both replay with no alert and no action (see §4 for what it took).
 
 ## 1. Record (Windows VM, admin terminal)
 
@@ -114,8 +115,32 @@ no longer a beacon to this detector (it looks exactly like Spotify's websocket).
 opens a new connection per check-in (§9.1), as do most HTTP beacons; the smoke test still
 passes.
 
+### Found by the real VM recording
+
+The first replay of `normal_use_vm.jsonl` raised **10 critical beacon alerts**, nothing from
+the other detectors:
+
+- **chrome.exe → ad servers every 30.0 s** (`htlb.casalemedia.com`, `68.67.x.x`, ...), each
+  time a *new* connection (new source port), so `new_connections_only` can't help. These are
+  ad slots refreshing in tabs left open on ad-heavy pages. As regular as any C2 (±0.1 s over
+  20 check-ins), so tightening `cv_max` / `min_starts` would not fix it.
+  → `detectors.beacon.allowlisted_score: 0.3`: an app in `data/allowlist.txt` gets 0.3 instead
+  of 0.9/0.95. That is below the 0.5 alert line even with the ×1.2 context boost, so a beacon
+  alone is quiet for a browser, but it still combines (beacon 0.3 + a DGA hit 0.8 → 0.86).
+  Trade-off: the allowlist matches by exe name, so malware calling itself `chrome.exe` gets the
+  low beacon score too. The allowlist already makes that trade for quarantine (§6.4).
+- **unknown → 224.0.0.22 / ff02::16 every ~300 s**: Windows' IGMP / MLD multicast membership
+  reports. → `detectors.beacon.skip_non_unicast: true`: multicast, broadcast and unspecified
+  destinations are ignored. No server answers there, so there is nothing to lose.
+
+`test_vm_recording_would_alert_without_the_49_beacon_fixes` keeps that evidence.
+
 Not tuned: `cv_max`, `min_starts`, the DGA threshold, the anomaly settings and every scoring
 threshold are unchanged.
+
+Also seen: ~30 % of the VM flows have process `unknown` (short connections whose owner
+`PortHistory` missed). They are alert-only by design (§9.6), but a beacon from a mis-attributed
+Chrome flow would not get the allowlisted score. Worth a capture ticket if it shows up.
 
 ## 5. Things to check against the VM recording
 
