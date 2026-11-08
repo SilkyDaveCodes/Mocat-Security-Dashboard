@@ -431,6 +431,17 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
   - CORS: the app's window is served from `http://127.0.0.1:<port>/` (pywebview `http_server`),
     a different origin, so responses carry CORS headers for loopback `http` origins only
     (`CORS_ORIGIN_REGEX`: `127.0.0.1` / `localhost`, any port; never `null` or a remote origin).
+  - Locked to this PC (#71), so a web page the user opens can't drive or read the API:
+    `TrustedHostMiddleware` allows only `Host` `127.0.0.1` / `localhost` (any port; `ALLOWED_HOSTS`),
+    anything else → 400 on every route and `/ws` (DNS rebinding). `WS /ws` closes the handshake
+    with 1008 when an `Origin` is present and doesn't match `CORS_ORIGIN_REGEX` (`null` included);
+    no `Origin` (the toast listener's `websockets` client sends none) is allowed. Every `POST`
+    needs `X-MoCat: 1` (`CLIENT_HEADER` / `CLIENT_HEADER_VALUE`, listed in CORS `allow_headers`),
+    else 403 before the route runs (no firewall call, no store write); the custom header forces a
+    CORS preflight, which foreign origins fail. Order: TrustedHost → CORS → header check, so a
+    preflight never needs the header and a 403 still carries CORS headers for the window. Tests
+    reach the API through `tests/api_helpers.local_client` (base URL `http://127.0.0.1:8765` + the
+    header; `TestClient`'s default `testserver` host is refused, and is never allowed in code).
 
 ### 6.7 `app/` (CE)
 - `pywebview` window loading `app/ui/index.html`; screens Home, Apps, Alerts, Settings.
@@ -442,7 +453,10 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
 - Toast notification for every high/critical alert.
 - Implementation notes: `app/main.py` holds `API_BASE_URL = "http://127.0.0.1:8765"` (and
   `validate_api_url`, which refuses any other host); `app/ui/app.js` holds the same `API_BASE`
-  (a test keeps them equal and fails on any other host in the UI). `webview` is imported lazily;
+  (a test keeps them equal and fails on any other host in the UI). Every POST from the app
+  (`app.js` `apiRequest`, `app/tray.py` `AgentApi._post`) sends `X-MoCat: 1`
+  (`app.main.API_CLIENT_HEADER` / `API_CLIENT_HEADER_VALUE`, mirrored as `CLIENT_HEADER` in
+  `app.js`; a test keeps both equal to `agent.api.CLIENT_HEADER`, #71). `webview` is imported lazily;
   `run(on_started=)` is the hook for the tray/toasts. `index.html` sets a CSP that only allows
   `self` and the agent; no external resources. JS tests: `tests/js/test_app.mjs` (run by
   `tests/test_app_ui.py` through `node`; skipped if `node` is missing).

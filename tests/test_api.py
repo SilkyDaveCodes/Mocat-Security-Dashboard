@@ -28,6 +28,7 @@ from agent.response import firewall
 from agent.response.firewall import FirewallError
 from agent.scoring import Scorer
 from agent.store import Store
+from tests.api_helpers import local_client
 
 EXE = r"C:\Users\demo\Downloads\FreeGameCheats.exe"
 PROC = "FreeGameCheats.exe"
@@ -121,7 +122,7 @@ def client(store: Store, scorer: Scorer, tracker: FlowTracker, fw: FakeFirewall,
     app = create_app(store, scorer, tracker, firewall_fns=fw.fns(),
                      allowlist=Allowlist(frozenset({"chrome.exe"})),
                      publish=published.append, clock=clock)
-    return TestClient(app)
+    return local_client(app)
 
 
 def make_action(action_id: str = "a1", kind: str = "quarantine_app", target: str = EXE,
@@ -296,7 +297,7 @@ def test_undo_through_real_firewall_module_patched_at_subprocess(
 
     monkeypatch.setattr(firewall.subprocess, "run", fake_run)
     store.save_action(make_action("a1"))
-    client = TestClient(create_app(store, scorer, tracker, allowlist=Allowlist(frozenset())))
+    client = local_client(create_app(store, scorer, tracker, allowlist=Allowlist(frozenset())))
 
     assert client.post("/actions/a1/undo").status_code == 200
     assert len(commands) == 2
@@ -519,7 +520,7 @@ def test_run_agent_feeds_tracker_and_api_controls_the_pipeline_mode(
             FakeServer.stopped = True
 
     def starter(app: Any, c: dict[str, Any]) -> FakeServer:
-        client = TestClient(app)
+        client = local_client(app)
         assert client.post("/mode", json={"mode": "auto"}).status_code == 200
         started.append(client)
         return FakeServer()

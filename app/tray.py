@@ -17,8 +17,10 @@ action id we can't find is treated as still in force (in doubt, keep warning).
 
 The colour logic is the pure function :func:`tray_state`. Everything else only talks HTTP to
 the local agent at :data:`app.main.API_BASE_URL` (``127.0.0.1:8765``, §9.5) through an injected
-client with ``get(url, timeout=)`` / ``post(url, json=, timeout=)`` (an ``httpx.Client`` in the
-app, a fake in tests). The state is refreshed by polling every ``app.tray_refresh_s`` seconds.
+client with ``get(url, timeout=)`` / ``post(url, json=, timeout=, headers=)`` (an
+``httpx.Client`` in the app, a fake in tests). Every POST sends ``X-MoCat: 1``
+(:data:`app.main.API_CLIENT_HEADER`), which the agent requires (#71). The state is refreshed
+by polling every ``app.tray_refresh_s`` seconds.
 
 ``pystray``, ``PIL`` and ``httpx`` are imported lazily (only when the real icon is built), so
 this module and its tests run on any OS without a display.
@@ -34,7 +36,13 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from agent import config as config_module
-from app.main import API_BASE_URL, UI_DIR, validate_api_url
+from app.main import (
+    API_BASE_URL,
+    API_CLIENT_HEADER,
+    API_CLIENT_HEADER_VALUE,
+    UI_DIR,
+    validate_api_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +130,9 @@ class AgentApi:
         return resp.json()
 
     def _post(self, path: str, body: dict[str, Any] | None = None) -> Any:
-        resp = self._http.post(self._base + path, json=body, timeout=self._timeout_s)
+        # #71: the agent refuses a POST without this header (403).
+        resp = self._http.post(self._base + path, json=body, timeout=self._timeout_s,
+                               headers={API_CLIENT_HEADER: API_CLIENT_HEADER_VALUE})
         resp.raise_for_status()
         return resp.json()
 

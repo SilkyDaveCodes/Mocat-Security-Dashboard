@@ -32,6 +32,7 @@ from agent.evidence import (
 from agent.main import NamedDetector, run_agent
 from agent.scoring import Scorer
 from agent.store import Store
+from tests.api_helpers import local_client
 
 LAB_C2 = "192.168.56.20"
 ALERT_ID = "0123456789abcdef0123456789abcdef"  # what scoring makes: uuid4().hex
@@ -148,7 +149,7 @@ def client(store: Store, cfg: dict[str, Any], settings: EvidenceSettings,
     scorer = Scorer(cfg, Allowlist(frozenset()), mode="notify")
     app = create_app(store, scorer, FlowTracker(600.0), allowlist=Allowlist(frozenset()),
                      evidence=EvidenceExporter(settings, run=run))
-    return TestClient(app)
+    return local_client(app)
 
 
 def make_ring_file(settings: EvidenceSettings, name: str | None = None) -> Path:
@@ -360,7 +361,7 @@ def test_evidence_tshark_failure_is_502(store: Store, settings: EvidenceSettings
                      allowlist=Allowlist(frozenset()),
                      evidence=EvidenceExporter(settings, run=FakeRun(**failure)))
 
-    resp = TestClient(app).get(f"/alerts/{ALERT_ID}/evidence")
+    resp = local_client(app).get(f"/alerts/{ALERT_ID}/evidence")
 
     assert resp.status_code == 502
 
@@ -369,7 +370,7 @@ def test_evidence_without_exporter_is_503(store: Store, cfg: dict[str, Any]) -> 
     store.save_alert(make_alert())
     app = create_app(store, Scorer(cfg, Allowlist(frozenset())), FlowTracker(600.0),
                      allowlist=Allowlist(frozenset()))
-    assert TestClient(app).get(f"/alerts/{ALERT_ID}/evidence").status_code == 503
+    assert local_client(app).get(f"/alerts/{ALERT_ID}/evidence").status_code == 503
 
 
 # --- AC3: unsafe alert id / non-IP target rejected before any command ------------------------

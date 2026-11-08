@@ -16,7 +16,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
 from agent import config
 from agent.api import FlowTracker, create_app
@@ -32,6 +31,7 @@ from agent.scoring import (
     own_executables,
 )
 from agent.store import Store
+from tests.api_helpers import local_client
 
 T0_MS = 1_700_000_000_000
 C2_IP = "192.168.56.20"
@@ -244,7 +244,7 @@ def api_env(cfg: dict[str, Any], tmp_path: Path) -> Any:
         app = create_app(store, make_scorer(cfg, mode="notify"), FlowTracker(600.0, lambda: 0.0),
                          firewall_fns=fw.fns(), allowlist=Allowlist(frozenset()),
                          self_exes=SELF_EXES)
-        yield SimpleNamespace(client=TestClient(app), store=store, fw=fw)
+        yield SimpleNamespace(client=local_client(app), store=store, fw=fw)
 
 
 @pytest.mark.parametrize("exe_path", [BASE_PY, VENV_PY.lower(), SOURCE_RUN_ODD_CASE.exe_path],
@@ -279,6 +279,6 @@ def test_create_app_default_refuses_the_running_interpreter(
         app = create_app(store, make_scorer(cfg, mode="notify"), FlowTracker(600.0, lambda: 0.0),
                          firewall_fns=fw.fns(), allowlist=Allowlist(frozenset()))
         store.save_alert(make_alert("al3", sys.executable, "python.exe"))
-        response = TestClient(app).post("/alerts/al3/quarantine")
+        response = local_client(app).post("/alerts/al3/quarantine")
     assert response.status_code == 409
     assert fw.quarantine_calls == []

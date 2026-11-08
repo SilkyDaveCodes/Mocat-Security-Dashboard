@@ -168,6 +168,33 @@ test("quarantine, evidence, status, apps, alerts and undo-all hit the right endp
   }
 });
 
+test("every POST helper sends the X-MoCat header and GETs don't (#71)", async () => {
+  assert.equal(ui.CLIENT_HEADER, "X-MoCat");
+  assert.equal(ui.CLIENT_HEADER_VALUE, "1");
+  const posts = [
+    (f) => ui.undoAction("act-1", f),
+    (f) => ui.undoAll(f),
+    (f) => ui.setMode("auto", f),
+    (f) => ui.quarantineAlert("al-1", f),
+  ];
+  for (const call of posts) {
+    const f = fakeFetch(200, {});
+    await call(f);
+    assert.equal(f.calls[0].init.method, "POST");
+    assert.equal(f.calls[0].init.headers["X-MoCat"], "1");
+  }
+  const gets = [
+    (f) => ui.getStatus(f), (f) => ui.getApps(f), (f) => ui.getAlerts(10, f),
+    (f) => ui.exportEvidence("al-1", f),
+  ];
+  for (const call of gets) {
+    const f = fakeFetch(200, {});
+    await call(f);
+    assert.equal(f.calls[0].init.method, "GET");
+    assert.equal(f.calls[0].init.headers["X-MoCat"], undefined);
+  }
+});
+
 test("API errors (404/409/502) become ApiError with the server's detail", async () => {
   for (const [status, detail, expect] of [
     [404, "No action with id 'x'", /Not found: No action with id 'x'/],

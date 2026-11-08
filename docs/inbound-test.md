@@ -43,7 +43,7 @@ only `subprocess.run` faked). If it fails, fix that first.
    `Flow model not found`.
 5. Mode **auto**: Settings screen in the app, or
    ```powershell
-   Invoke-RestMethod -Method Post http://127.0.0.1:8765/mode -ContentType application/json -Body '{"mode":"auto"}'
+   Invoke-RestMethod -Method Post http://127.0.0.1:8765/mode -Headers @{'X-MoCat'='1'} -ContentType application/json -Body '{"mode":"auto"}'
    ```
 6. No HomeSOC rules left over:
    ```powershell
@@ -73,7 +73,7 @@ Windows VM, expect within a few seconds:
 1. Undo the block: the alert's Undo button in the app, or
    ```powershell
    Invoke-RestMethod "http://127.0.0.1:8765/actions?undone=false"      # find the block_ip id
-   Invoke-RestMethod -Method Post http://127.0.0.1:8765/actions/<id>/undo
+   Invoke-RestMethod -Method Post http://127.0.0.1:8765/actions/<id>/undo -Headers @{'X-MoCat'='1'}
    Get-NetFirewallRule -Group HomeSOC | Select DisplayName             # expect nothing
    ```
 2. A brute force needs a listening service, or every attempt is a dropped SYN and the model
@@ -99,7 +99,7 @@ Windows VM, expect within a few seconds:
 
 App tray menu **Undo all**, or
 ```powershell
-Invoke-RestMethod -Method Post http://127.0.0.1:8765/undo-all
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/undo-all -Headers @{'X-MoCat'='1'}
 Get-NetFirewallRule -Group HomeSOC | Select DisplayName    # expect nothing
 ```
 Then stop the listener, restore `192.168.56.20` in `test_intel.txt`, and set the mode back if
