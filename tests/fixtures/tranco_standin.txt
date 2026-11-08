@@ -1,0 +1,50 @@
+# Stand-in for the cached Tranco top-100k list (data/cache/tranco), used by
+# tests/test_fp_replay.py only when the real cache is absent (CI, fresh checkout).
+# Every entry is a popular registered domain that is in the real Tranco top 100k, so the DGA
+# detector skips it live as well. One domain per line; # starts a comment.
+google.com
+gstatic.com
+googleapis.com
+googleusercontent.com
+googletagmanager.com
+google-analytics.com
+youtube.com
+ytimg.com
+ggpht.com
+googlevideo.com
+wikipedia.org
+wikimedia.org
+reddit.com
+redditstatic.com
+redditmedia.com
+redd.it
+github.com
+githubassets.com
+githubusercontent.com
+bbc.co.uk
+bbci.co.uk
+nytimes.com
+nyt.com
+amazon.com
+media-amazon.com
+ssl-images-amazon.com
+stackoverflow.com
+sstatic.net
+cloudflare.com
+bing.com
+msn.com
+microsoft.com
+microsoftonline.com
+office.com
+office.net
+windows.com
+windowsupdate.com
+msftconnecttest.com
+live.com
+live.net
+discord.gg
+discord.com
+discordapp.com
+discordapp.net
+spotify.com
+scdn.co

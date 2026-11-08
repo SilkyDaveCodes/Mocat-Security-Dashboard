@@ -1,0 +1,5 @@
+true\predicted,benign,portscan,bruteforce,dos
+benign,60,0,0,0
+portscan,0,59,0,1
+bruteforce,0,0,60,0
+dos,0,1,0,59

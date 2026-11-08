@@ -1,0 +1,146 @@
+# HomeSOC configuration. Every detector/scoring threshold lives here (CLAUDE.md §6, §10).
+# Times are in seconds unless the key name says otherwise.
+
+# Response mode: off (watch only) | notify (alert only) | auto (alert + contain).
+mode: notify
+
+capture:
+  # Interface name as shown in Wireshark's interface list (§6.1). Set per machine.
+  interface: "Ethernet"
+  idle_timeout: 10        # NFStream idle_timeout (s)
+  active_timeout: 30      # NFStream active_timeout (s)
+  local_ips_refresh_s: 60 # re-read this PC's own IPs (inbound vs outbound) this often
+  port_pid_cache_ttl_s: 2 # reuse one psutil port->PID snapshot this long (flows with no process name)
+  port_poll_interval_s: 0.05 # record port->PID owners this often, so short connections keep their app
+  port_history_s: 60      # remember each port's last owner this long (flows arrive after they close)
+  endpoint_fallback: true # port never seen -> the one app seen on the same remote IP:port (outbound, #68)
+  nfstream_process_visibility: false # NFStream's own process helper (crashes on Windows, #68); off = port history only
+
+calibration:
+  minutes: 10             # anomaly calibration period (10 min for the demo, §6.3)
+
+detectors:
+  intel:
+    refresh_interval_s: 3600   # Feodo Tracker blocklist refresh (hourly)
+    score: 1.0                 # signal score on a blocklist hit
+    # abuse.ch Feodo Tracker "recommended" list (§6.3). Downloaded only, never connected to (§9.2).
+    feed_url: "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt"
+    download_timeout_s: 10     # give up on a blocklist download after this long
+
+  dga:
+    probability_threshold: 0.8 # model.predict_proba >= this -> signal
+    burst_count: 5             # >= this many DGA-looking lookups ...
+    burst_window_s: 60         # ... by one process within this window raises the score
+    burst_boost: 0.1           # added to the score during a burst (capped at 1.0)
+    tranco_top_n: 100000       # skip hostnames whose domain is in the Tranco top N
+    skip_suffixes: [".local", ".arpa"]   # never scored (mDNS names, reverse lookups)
+
+  beacon:
+    history: 20                # flow start times kept per (process, dst_ip, dst_port)
+    min_starts: 6              # starts needed before checking intervals
+    mean_interval_min_s: 2     # mean interval must be within [min, max]
+    mean_interval_max_s: 600
+    cv_max: 0.1                # coefficient of variation must be below this
+    score: 0.9                 # beacon score
+    high_score: 0.95           # score once high_score_min_starts is reached
+    high_score_min_starts: 12
+    # Count a start only for a NEW connection (new source port). One long-lived connection
+    # that NFStream cuts into many flows (idle/active timeout) is not a check-in: without this,
+    # websocket keepalives and long downloads look like beacons (FP test, ticket #49).
+    new_connections_only: true
+    # Ignore flows to multicast/broadcast/unspecified addresses (no server answers there).
+    # Windows' IGMP/MLD reports every ~5 min looked like a beacon (VM FP recording, #49).
+    skip_non_unicast: true
+    # Score for apps in paths.allowlist (browsers, Discord, Spotify...), below the 0.5 alert
+    # line: a beacon alone stays quiet for them but still adds up with another detector.
+    # Open tabs on ad-heavy pages poll ad servers every 30 s (VM FP recording, #49). null = off.
+    allowlisted_score: 0.3
+
+  anomaly:
+    min_windows: 30            # windows needed for a per-process IsolationForest
+    window_s: 60               # per-process aggregation window
+    bytes_out_threshold: 10000000   # 10 MB uploaded in one window
+    score_min: 0.6             # signal score range for anomalous windows
+    score_max: 0.9
+    # Calibration length comes from calibration.minutes above.
+    global_min_windows: 3      # pooled windows needed before the global model is fitted. Low on
+                               # purpose: capture is on the host-only adapter, where a 10-min demo
+                               # calibration only sees ~7 windows of DHCP/multicast chatter (#62)
+    max_windows: 1440          # windows kept per process baseline (oldest dropped; 24 h of 60 s)
+    learn_after_calibration: true  # keep adding normal (unflagged, <= threshold) windows later
+    contamination: auto        # IsolationForest contamination ("auto" or a float in (0, 0.5])
+    n_estimators: 100          # IsolationForest trees
+
+  flow_model:
+    probability_threshold: 0.85  # non-benign probability >= this -> signal
+    # Inbound flows are grouped per source IP over this window (processing time). The window's
+    # class probabilities are the mean of its flows' predict_proba rows (flow.joblib is per-flow).
+    window_s: 60
+    min_flows: 3                 # flows from one source IP needed in the window before a signal
+    max_flows_per_source: 1000   # newest flows kept per source IP (bounds memory during a flood)
+    repeat_s: 60                 # at most one signal per (source IP, attack class) this often
+
+scoring:
+  window_s: 60                 # signals kept per process
+  context_boost: 1.2           # x risk if unsigned or in a risky directory (capped at 1.0)
+  alert_threshold: 0.5         # risk >= this -> Alert
+  severity:                    # risk lower bounds per severity
+    medium: 0.5
+    high: 0.75
+    critical: 0.9
+  auto_quarantine:
+    risk: 0.85                 # auto mode: risk >= this ...
+    min_detectors: 2           # ... and at least this many distinct detectors
+  auto_block_ip:
+    risk: 0.85                 # auto mode: inbound flow_model risk >= this -> block the source IP
+
+bus:
+  queue_size: 1000             # max events buffered per subscriber; when full, the oldest is dropped
+  drop_log_every: 1000         # log a drop warning on the 1st drop and then every Nth drop per subscriber
+
+pipeline:
+  procinfo_cache_ttl_s: 30     # reuse one process lookup (exe path, signature) per PID this long
+  prune_interval_s: 60         # how often scoring drops expired signal windows
+
+store:
+  path: data/homesoc.db        # SQLite: alerts, actions (with firewall rule names for Undo), baselines
+
+api:
+  host: "127.0.0.1"            # never 0.0.0.0 (§9.5)
+  port: 8765
+  ws_flow_rate_limit_per_s: 5  # throttled FlowEvent summaries on /ws
+  apps_window_s: 600           # GET /apps counts flows seen in the last 10 minutes
+
+evidence:                      # rolling capture + per-alert pcap export (§6.8, agent/evidence.py)
+  # Wireshark tools. A bare name must be on PATH; the Wireshark installer doesn't add it, so
+  # these point at its default folder. ring_path / evidence_dir are relative to the repo root.
+  dumpcap: "C:\\Program Files\\Wireshark\\dumpcap.exe"
+  tshark: "C:\\Program Files\\Wireshark\\tshark.exe"
+  mergecap: "C:\\Program Files\\Wireshark\\mergecap.exe"   # merges the filtered ring files
+  ring_path: data/ring.pcapng  # dumpcap -w (it writes ring_<NNNNN>_<date>.pcapng next to it)
+  ring_filesize_kb: 20000      # dumpcap -b filesize: (kB per ring file)
+  ring_files: 5                # dumpcap -b files: (ring files kept)
+  evidence_dir: data/evidence  # GET /alerts/{id}/evidence writes <alert_id>.pcap here
+  export_timeout_s: 60         # give up on one tshark / mergecap run after this long
+  stop_timeout_s: 5            # on shutdown: terminate dumpcap, wait this long, then kill
+
+app:
+  tray_refresh_s: 5            # the tray re-reads GET /alerts, /actions, /status this often
+  http_timeout_s: 5            # give up on one app -> agent HTTP call after this long
+  toast_text_chars: 120        # a toast shows this much of what_you_should_do (app/notify.py)
+  toast_dedupe_max: 1000       # alert ids remembered so the same alert never toasts twice
+  ws_reconnect_s: 5            # the toast listener retries ws://127.0.0.1:8765/ws this often
+
+paths:
+  allowlist: data/allowlist.txt    # exe names never auto-quarantined (§6.4)
+  test_intel: data/test_intel.txt  # lab-only "known bad" IPs (§9.2)
+  cache_dir: data/cache
+  dga_model: models/dga.joblib     # trained by models/train_dga.py
+  flow_model: models/flow.joblib   # trained by models/train_flow.py (inbound attacks)
+  # Cached Tranco list: a file ("rank,domain" or one domain per line), or a directory such as
+  # the tranco package cache that train_dga.py writes (newest *.csv is used). Never downloaded live.
+  tranco_cache: data/cache/tranco
+  # Committed + bundled Tranco top 100k (one domain per line), used when there is no cache
+  # (a fresh install). Regenerate with models/make_tranco_list.py.
+  tranco_bundled: data/tranco_top100k.txt
+  domain_allowlist: data/domain_allowlist.txt  # domains the DGA detector never scores

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Everything is local; the only server this page may talk to is the agent on 127.0.0.1:8765. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src http://127.0.0.1:8765 ws://127.0.0.1:8765; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>MoCat HomeSOC</title>
+  <link rel="icon" href="logo.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <!-- Side panel -->
+  <aside class="panel">
+    <div class="brand">
+      <div class="brand-mark">
+        <img class="brand-logo" src="logo.png" alt="MoCat HomeSOC" width="44" height="44">
+        <span id="shield" class="shield shield-off" title="Protection status"></span>
+      </div>
+      <div>
+        <div class="brand-name">MoCat HomeSOC</div>
+        <div id="conn" class="conn conn-off">Agent offline — reconnecting…</div>
+      </div>
+    </div>
+
+    <h6 class="panel-head">Overview</h6>
+    <nav class="panel-nav">
+      <button class="nav-item panel-item active" data-screen="home">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h3M4 12h3M4 18h3M10 6h10M10 12h10M10 18h10"/></svg>
+        Dashboard</button>
+      <button class="nav-item panel-item" data-screen="apps">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M9 10v9"/></svg>
+        Apps</button>
+      <button class="nav-item panel-item" data-screen="alerts">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 3 19h18z"/><path d="M12 10v4M12 16.5v.5"/></svg>
+        Alerts <span id="nav-alert-count" class="count"></span></button>
+    </nav>
+
+    <h6 class="panel-head">Status</h6>
+    <div id="side-status" class="side-status"></div>
+
+    <span class="panel-fill"></span>
+    <button class="nav-item panel-item" data-screen="settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/><circle cx="9" cy="7" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="8" cy="17" r="1.6"/></svg>
+      Settings</button>
+  </aside>
+
+  <main class="content">
+    <div id="notice" class="notice" role="status" hidden></div>
+
+    <section id="screen-home" class="screen">
+      <h1>Dashboard</h1>
+      <p class="subtitle">Everything MoCat is watching on this PC.</p>
+      <div id="status-tiles" class="tiles"></div>
+      <div class="section-head">
+        <h2>Recent alerts</h2>
+        <button id="view-all-alerts" class="btn btn-link">See all alerts &rarr;</button>
+      </div>
+      <div id="home-alerts" class="alert-list"></div>
+    </section>
+
+    <section id="screen-apps" class="screen" hidden>
+      <h1>Apps</h1>
+      <p class="subtitle">Apps that used the network in the last 10 minutes. Updates live.</p>
+      <div id="apps-table" class="card table-wrap"></div>
+    </section>
+
+    <section id="screen-alerts" class="screen" hidden>
+      <h1>Alerts</h1>
+      <p class="subtitle">What happened, what we did, and what you should do.</p>
+      <div id="alert-list" class="alert-list"></div>
+    </section>
+
+    <section id="screen-settings" class="screen" hidden>
+      <h1>Settings</h1>
+      <p class="subtitle">How MoCat responds to threats.</p>
+      <div class="card">
+        <h2>Protection mode</h2>
+        <fieldset class="modes">
+          <label class="mode"><input type="radio" name="mode" value="off">
+            <span><strong>Off</strong> — watch and alert only; never block anything.</span></label>
+          <label class="mode"><input type="radio" name="mode" value="notify">
+            <span><strong>Notify</strong> — alert me; I decide what to block.</span></label>
+          <label class="mode"><input type="radio" name="mode" value="auto">
+            <span><strong>Auto-protect</strong> — alert and automatically quarantine clear threats.</span></label>
+        </fieldset>
+        <p class="hint">The mode resets to the value in config.yaml when the agent restarts.</p>
+      </div>
+      <div class="card">
+        <h2>Undo everything</h2>
+        <p class="hint">Removes every firewall rule MoCat has added (group "HomeSOC").</p>
+        <button id="undo-all" class="btn btn-danger">Undo all</button>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

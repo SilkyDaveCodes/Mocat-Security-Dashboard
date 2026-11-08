@@ -1,0 +1,18 @@
+# Runtime dependencies (CLAUDE.md §8). Windows 10/11 x64, Python 3.12.
+nfstream
+psutil
+scikit-learn
+pandas
+joblib
+fastapi
+uvicorn
+httpx         # FastAPI TestClient (tests)
+certifi       # CA bundle for the intel blocklist download (agent/detectors/intel.py)
+pywebview
+pystray
+pillow
+pyyaml
+tranco
+winotify
+websockets    # app/notify.py: sync client for WS /ws (toasts)
+pytest
