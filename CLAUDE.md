@@ -411,7 +411,9 @@ try { $rules = @(Get-NetFirewallRule -Group 'HomeSOC' -ErrorAction Stop) } catch
 
 ### 6.7 `app/` (CE)
 - `pywebview` window loading `app/ui/index.html`; screens Home, Apps, Alerts, Settings.
-  Reuse the look of the MiniSOC dashboard prototype.
+  Branded **Mocat HomeSOC**: logo `app/ui/logo.png`, black icon rail + frosted grey panels, accent
+  `#5170FF` (the logo's blue). User-facing sentences say "Mocat" ("Mocat noticed…"); internal
+  names (firewall rules/group `HomeSOC`, exe names, `%PROGRAMDATA%\HomeSOC`) stay `HomeSOC`.
 - `pystray` tray icon: green (ok), yellow (alerts), red (active high/critical); menu:
   Open, Mode ▸, Undo all, Quit.
 - Toast notification for every high/critical alert.

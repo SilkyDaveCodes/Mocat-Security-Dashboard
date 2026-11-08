@@ -38,7 +38,7 @@ WS_URL = "ws://127.0.0.1:8765/ws"
 UI_DIR = Path(__file__).resolve().parent / "ui"
 INDEX_HTML = UI_DIR / "index.html"
 
-WINDOW_TITLE = "HomeSOC"
+WINDOW_TITLE = "Mocat HomeSOC"
 WINDOW_SIZE = (1180, 780)
 WINDOW_MIN_SIZE = (900, 600)
 

@@ -221,6 +221,31 @@ test("reconnect backoff grows and is capped", () => {
   assert.equal(ui.nextBackoff(20), 30000);
 });
 
+test("dashboard tiles lead with a big alert count and say when all is clear", () => {
+  const busy = ui.renderStatusTiles({ status: "running", mode: "auto", alerts: 7, active_actions: 1, apps: 4 });
+  const hero = busy.match(/<div class="tile tile-hero">(.*?)<\/div>/s);
+  assert.ok(hero, "the first tile is the headline tile");
+  assert.match(hero[1], /<span class="tile-label">Alerts<\/span><span class="tile-value">7<\/span>/);
+  assert.match(hero[1], /1 active block</);
+  assert.equal((busy.match(/class="tile tile-hero"/g) || []).length, 1);
+  assert.match(busy, /Running/);
+  assert.match(busy, /Apps online<\/span><span class="tile-value">4</);
+  const quiet = ui.renderStatusTiles({ status: "running", mode: "notify", alerts: 0, active_actions: 0 });
+  assert.match(quiet, /tile-note ok">All clear</);
+  assert.match(ui.renderStatusTiles(null), /tile-value">0</);  // offline: no status yet
+});
+
+test("side status shows the mode as a pill and escapes unknown values", () => {
+  const html = ui.renderSideStatus({ status: "running", mode: "auto", active_actions: 2, uptime_s: 125 });
+  assert.match(html, /<span class="pill pill-auto">Auto-protect<\/span>/);
+  assert.match(html, /Active blocks<\/span><span>2</);
+  assert.match(html, /Uptime<\/span><span>2m 5s</);
+  const odd = ui.renderSideStatus({ mode: "<img onerror=x>", active_actions: "<b>" });
+  assert.match(odd, /pill-unknown">unknown</);
+  assert.ok(!odd.includes("<b>") && !odd.includes("<img"), "status values are escaped");
+  assert.match(odd, /Protection<\/span><span>Offline</);
+});
+
 // Optional filter: `node test_app.mjs <substring>` runs only tests whose name contains it.
 const filter = process.argv[2] || "";
 const selected = tests.filter((t) => t.name.includes(filter));

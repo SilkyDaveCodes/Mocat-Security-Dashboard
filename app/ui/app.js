@@ -1,4 +1,4 @@
-/* HomeSOC UI (CLAUDE.md §6.6, §6.7).
+/* Mocat HomeSOC UI (CLAUDE.md §6.6, §6.7).
  *
  * Talks only to the local agent at API_BASE (127.0.0.1:8765). No external resources.
  *
@@ -19,6 +19,7 @@ const MODE_LABELS = {
   notify: "Notify — alert me, don't block",
   auto: "Auto-protect — alert and contain",
 };
+const MODE_NAMES = { off: "Off", notify: "Notify", auto: "Auto-protect" };
 const SEVERITIES = ["low", "medium", "high", "critical"];
 const BACKOFF_BASE_MS = 1000;
 const BACKOFF_MAX_MS = 30000;
@@ -102,7 +103,7 @@ async function apiRequest(path, options, fetchFn) {
   try {
     resp = await doFetch(apiUrl(path), init);
   } catch (err) {
-    throw new ApiError(0, "The HomeSOC agent is not reachable. Is it running?");
+    throw new ApiError(0, "The Mocat agent is not reachable. Is it running?");
   }
   let data = null;
   try {
@@ -272,7 +273,7 @@ function renderAlertCard(alert, actionsById) {
 
 function renderAlertList(alerts, actionsById) {
   if (!alerts || !alerts.length) {
-    return `<p class="empty">No alerts. HomeSOC hasn't seen anything suspicious.</p>`;
+    return `<p class="empty">No alerts. Mocat hasn't seen anything suspicious.</p>`;
   }
   return alerts.map((a) => renderAlertCard(a, actionsById)).join("\n");
 }
@@ -307,18 +308,38 @@ function renderAppsTable(apps) {
 </table>`;
 }
 
+/** Dashboard tiles: a big headline alert count, then the smaller status tiles. */
 function renderStatusTiles(status) {
   const s = status || {};
+  const alerts = Number(s.alerts) || 0;
+  const blocks = Number(s.active_actions) || 0;
+  const note = alerts
+    ? `<span class="tile-note bad">${escapeHtml(blocks)} active block${blocks === 1 ? "" : "s"}</span>`
+    : `<span class="tile-note ok">All clear</span>`;
+  const hero = `<div class="tile tile-hero"><span class="tile-label">Alerts</span>`
+    + `<span class="tile-value">${escapeHtml(alerts)}</span>${note}</div>`;
   const tiles = [
     ["Protection", s.status === "running" ? "Running" : "Offline"],
-    ["Mode", MODE_LABELS[s.mode] ? s.mode : "unknown"],
-    ["Alerts", s.alerts ?? 0],
-    ["Active blocks", s.active_actions ?? 0],
+    ["Mode", MODE_NAMES[s.mode] || "unknown"],
+    ["Active blocks", blocks],
     ["Apps online", s.apps ?? 0],
-    ["Uptime", formatDuration(s.uptime_s)],
   ];
-  return tiles.map(([label, value]) => `<div class="tile"><span class="tile-label">${escapeHtml(label)}</span>`
+  return hero + tiles.map(([label, value]) => `<div class="tile"><span class="tile-label">${escapeHtml(label)}</span>`
     + `<span class="tile-value">${escapeHtml(value)}</span></div>`).join("");
+}
+
+/** The side panel's Status rows: mode, protection, blocks, uptime. */
+function renderSideStatus(status) {
+  const s = status || {};
+  const mode = MODES.includes(s.mode) ? s.mode : "unknown";
+  const rows = [
+    ["Mode", `<span class="pill pill-${escapeHtml(mode)}">${escapeHtml(MODE_NAMES[mode] || mode)}</span>`],
+    ["Protection", escapeHtml(s.status === "running" ? "Running" : "Offline")],
+    ["Active blocks", escapeHtml(s.active_actions ?? 0)],
+    ["Uptime", escapeHtml(s.uptime_s ? formatDuration(s.uptime_s) : "—")],
+  ];
+  return rows.map(([label, value]) => `<div class="side-row"><span>${escapeHtml(label)}</span><span>${value}</span></div>`)
+    .join("");
 }
 
 /* ---------------------------------------------------------------- state updates */
@@ -419,6 +440,8 @@ function startUi(doc, win) {
       shield.className = `shield ${!state.connected ? "shield-off" : open.length ? "shield-red" : state.alerts.length ? "shield-yellow" : "shield-green"}`;
       $("#home-alerts").innerHTML = renderAlertList(state.alerts.slice(0, 3), state.actionsById);
       $("#nav-alert-count").textContent = state.alerts.length ? String(state.alerts.length) : "";
+      $("#rail-alert-dot").hidden = open.length === 0;
+      $("#side-status").innerHTML = renderSideStatus(state.status);
     }
     if (want.has("alerts")) {
       $("#alert-list").innerHTML = renderAlertList(state.alerts, state.actionsById);
@@ -524,14 +547,14 @@ function startUi(doc, win) {
   }
 
   async function onUndoAll() {
-    if (!win.confirm("Remove every firewall rule HomeSOC has added?")) return;
+    if (!win.confirm("Remove every firewall rule Mocat has added?")) return;
     try {
       const res = await undoAll();
       for (const a of Object.values(state.actionsById)) {
         if (a.kind !== "undo") state.actionsById[a.id] = { ...a, undone: true };
       }
       applyWsMessage(state, res.undo);
-      notice(`Removed HomeSOC's firewall rules (${res.undone} action(s) undone).`, "ok");
+      notice(`Removed Mocat's firewall rules (${res.undone} action(s) undone).`, "ok");
     } catch (err) {
       showError(err);
     }
@@ -592,7 +615,7 @@ if (typeof module !== "undefined" && module.exports) {
     API_BASE, WS_URL, MODES, ApiError,
     escapeHtml, formatBytes, formatDuration, apiUrl, apiRequest, errorMessage, nextBackoff,
     getStatus, getApps, getAlerts, undoAction, undoAll, setMode, quarantineAlert, exportEvidence,
-    renderAlertCard, renderAlertList, renderAppsTable, renderStatusTiles,
+    renderAlertCard, renderAlertList, renderAppsTable, renderStatusTiles, renderSideStatus,
     createState, upsertAlert, mergeFlow, applyWsMessage,
   };
 }
