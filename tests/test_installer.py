@@ -170,6 +170,29 @@ def test_spec_bundles_every_file_the_agent_seeds_into_the_data_root(spec_run: Sp
         assert datas[rel] == Path(rel).parent.as_posix(), f"{rel} lands in the wrong folder"
 
 
+def test_spec_bundles_the_tranco_fallback_list_and_certifi(spec_run: SpecRun) -> None:
+    agent = _agent_analysis(spec_run)
+    datas = {_rel(src): dest for src, dest in agent.datas}
+    assert datas.get("data/tranco_top100k.txt") == "data"
+    assert (REPO_ROOT / "data" / "tranco_top100k.txt").is_file()
+    # intel.py verifies TLS with certifi: it must be collected, never excluded
+    assert "certifi" in agent.kwargs.get("hiddenimports", [])
+    for a in spec_run.analyses:
+        assert "certifi" not in a.kwargs.get("excludes", [])
+    # the generator script is build-time only
+    assert "models/make_tranco_list.py" not in bundled_files(agent.datas)
+
+
+def test_tranco_fallback_list_is_not_gitignored() -> None:
+    import shutil
+    import subprocess
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    path = REPO_ROOT / "data" / "tranco_top100k.txt"
+    res = subprocess.run(["git", "check-ignore", "-q", str(path)], cwd=REPO_ROOT)
+    assert res.returncode == 1, "data/tranco_top100k.txt must be committed (it is gitignored)"
+
+
 def test_spec_bundles_the_app_ui_and_config(spec_run: SpecRun) -> None:
     app = _app_analysis(spec_run)
     datas = {_rel(src): dest for src, dest in app.datas}

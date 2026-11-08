@@ -18,6 +18,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import ssl
 import threading
 import time
 import urllib.request
@@ -41,13 +42,39 @@ Clock = Callable[[], float]
 Spawner = Callable[[Callable[[], None]], None]
 
 
+def tls_context() -> ssl.SSLContext:
+    """A certificate-verifying TLS context for the feed download.
+
+    Uses certifi's CA bundle when certifi is importable (it ships with httpx, and PyInstaller's
+    hook-certifi bundles its ``cacert.pem``): a fresh Windows install lacks some roots until
+    Windows fetches them on demand, which Python's ssl cannot trigger, so the system store alone
+    fails with CERTIFICATE_VERIFY_FAILED. Without certifi, the default (system) context is used.
+    Verification is always on: ``CERT_REQUIRED`` and hostname checking, never an unverified context.
+    """
+    try:
+        import certifi
+
+        cafile: str | None = certifi.where()
+    except ImportError:
+        cafile = None
+    if cafile is not None:
+        try:
+            return ssl.create_default_context(cafile=cafile)
+        except (OSError, ssl.SSLError) as exc:  # bundle missing/unreadable in a broken build
+            logger.warning(
+                "Could not load certifi CA bundle %s (%s); using system roots", cafile, exc
+            )
+    return ssl.create_default_context()
+
+
 def download_feed(url: str, timeout_s: float) -> str:
     """Download the blocklist text. The ONLY network call in this module (§9.2).
 
-    Raises ``urllib.error.URLError`` / ``HTTPError`` / ``TimeoutError`` / ``OSError`` on failure.
+    Raises ``urllib.error.URLError`` / ``HTTPError`` / ``TimeoutError`` / ``OSError`` on failure
+    (``ssl.SSLError`` and certificate errors are ``OSError`` subclasses).
     """
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+    with urllib.request.urlopen(request, timeout=timeout_s, context=tls_context()) as response:
         return response.read().decode("utf-8")
 
 

@@ -278,6 +278,28 @@ def test_seed_skips_a_file_missing_from_the_bundle(tmp_path: Path) -> None:
     assert (data / "models" / "dga.joblib").is_file()
 
 
+def test_seed_adds_the_bundled_tranco_list_to_an_existing_install(tmp_path: Path) -> None:
+    # Upgrade from a build without the list: config/lists already seeded, tranco missing.
+    assert "data/tranco_top100k.txt" in config.SEED_IF_MISSING
+    bundle, data = _bundle(tmp_path), tmp_path / "data_root"
+    config.seed_data_root(bundle, data)
+    (data / "data" / "tranco_top100k.txt").unlink()
+    (data / "config.yaml").write_text("edited by the user", encoding="utf-8")
+    written = config.seed_data_root(bundle, data)
+    assert written == [data / "data" / "tranco_top100k.txt"]
+    assert (data / "data" / "tranco_top100k.txt").read_bytes() == b"bundled data/tranco_top100k.txt"
+    assert (data / "config.yaml").read_text(encoding="utf-8") == "edited by the user"
+
+
+def test_seed_does_not_overwrite_an_existing_tranco_list(tmp_path: Path) -> None:
+    bundle, data = _bundle(tmp_path), tmp_path / "data_root"
+    (data / "data").mkdir(parents=True)
+    (data / "data" / "tranco_top100k.txt").write_text("user copy\n", encoding="utf-8")
+    written = config.seed_data_root(bundle, data)
+    assert data / "data" / "tranco_top100k.txt" not in written
+    assert (data / "data" / "tranco_top100k.txt").read_text(encoding="utf-8") == "user copy\n"
+
+
 def test_default_config_falls_back_to_the_bundle_until_seeded(tmp_path: Path) -> None:
     bundle, data = _bundle(tmp_path), tmp_path / "data_root"
     assert config.default_config_path(data, bundle) == bundle / "config.yaml"

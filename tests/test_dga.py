@@ -208,9 +208,115 @@ def test_tranco_cache_directory_uses_csv_inside(cfg, tmp_path, allowlist_file):
 def test_missing_tranco_and_allowlist_are_tolerated(cfg, tmp_path, caplog):
     stub = StubModel(0.99)
     with caplog.at_level(logging.WARNING, logger="agent.detectors.dga"):
-        det = make(cfg, stub, tmp_path / "nope.csv", tmp_path / "nope.txt")
+        # No cache and no bundled list (since the bundled fallback, both must be missing).
+        det = make(cfg, stub, tmp_path / "nope.csv", tmp_path / "nope.txt",
+                   tranco_bundled_path=tmp_path / "nope_bundled.txt")
     assert "Tranco" in caplog.text
     assert len(det.process(dns_flow(DGA_HOST))) == 1
+
+
+# --- bundled Tranco fallback (fresh install: no data/cache/tranco) ------------------------------
+
+
+@pytest.fixture
+def bundled_file(tmp_path: Path) -> Path:
+    path = tmp_path / "tranco_top100k.txt"
+    path.write_text("# Tranco top 4 (test)\ngoogle.com\nbbc.co.uk\nexample-midrank.org\n"
+                    "microsoft.com\n", encoding="utf-8")
+    return path
+
+
+def test_no_cache_falls_back_to_bundled_list(cfg, tmp_path, bundled_file, allowlist_file, caplog):
+    stub = StubModel(0.99)
+    with caplog.at_level(logging.INFO, logger="agent.detectors.dga"):
+        det = make(cfg, stub, tmp_path / "no_cache_dir", allowlist_file,
+                   tranco_bundled_path=bundled_file)
+    for host in ("google.com", "www.google.com", "news.bbc.co.uk", "example-midrank.org"):
+        assert det.process(dns_flow(host)) == [], host
+    assert stub.calls == []
+    assert len(det.process(dns_flow(DGA_HOST))) == 1  # DGA-looking still scored as before
+    assert "bundled Tranco list" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING and "Tranco" in r.message]
+
+
+def test_empty_cache_directory_falls_back_to_bundled_list(cfg, tmp_path, bundled_file,
+                                                          allowlist_file):
+    cache_dir = tmp_path / "tranco"
+    cache_dir.mkdir()  # exists, but no *.csv yet
+    stub = StubModel(0.99)
+    det = make(cfg, stub, cache_dir, allowlist_file, tranco_bundled_path=bundled_file)
+    assert det.process(dns_flow("example-midrank.org")) == []
+
+
+def test_cache_wins_over_bundled_list(cfg, tmp_path, bundled_file, allowlist_file, caplog):
+    cache_dir = tmp_path / "tranco"
+    cache_dir.mkdir()
+    (cache_dir / "ABC12.csv").write_text("1,cacheonly.net\n", encoding="utf-8")
+    stub = StubModel(0.99)
+    with caplog.at_level(logging.INFO, logger="agent.detectors.dga"):
+        det = make(cfg, stub, cache_dir, allowlist_file, tranco_bundled_path=bundled_file)
+    assert det.process(dns_flow("cacheonly.net")) == []
+    # the bundled list is not merged in: its domains are scored like any other
+    assert len(det.process(dns_flow("example-midrank.org"))) == 1
+    assert "Tranco cache" in caplog.text and "bundled Tranco list" not in caplog.text
+
+
+def test_bundled_list_honours_tranco_top_n(cfg, tmp_path, bundled_file, allowlist_file):
+    cfg["detectors"]["dga"]["tranco_top_n"] = 2  # google.com, bbc.co.uk (header not counted)
+    stub = StubModel(0.99)
+    det = make(cfg, stub, tmp_path / "none", allowlist_file, tranco_bundled_path=bundled_file)
+    assert det.process(dns_flow("bbc.co.uk")) == []
+    assert len(det.process(dns_flow("example-midrank.org"))) == 1
+
+
+def test_bundled_path_comes_from_config(cfg, tmp_path, bundled_file, allowlist_file):
+    cfg["paths"]["tranco_bundled"] = str(bundled_file)
+    stub = StubModel(0.99)
+    det = make(cfg, stub, tmp_path / "none", allowlist_file)
+    assert det.process(dns_flow("example-midrank.org")) == []
+
+
+def test_old_config_without_tranco_bundled_uses_default_path(cfg, tmp_path, allowlist_file,
+                                                             monkeypatch):
+    # A data-root config.yaml seeded before the key existed is never overwritten on upgrade.
+    del cfg["paths"]["tranco_bundled"]
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "tranco_top100k.txt").write_text("google.com\n", encoding="utf-8")
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
+    det = make(cfg, StubModel(0.99), tmp_path / "none", allowlist_file)
+    assert det.process(dns_flow("google.com")) == []
+
+
+def test_config_sets_the_bundled_tranco_path():
+    assert config.load()["paths"]["tranco_bundled"] == dga.DEFAULT_TRANCO_BUNDLED
+
+
+def test_committed_bundled_tranco_list_is_sane():
+    path = REPO_ROOT / config.load()["paths"]["tranco_bundled"]
+    lines = path.read_text(encoding="utf-8").splitlines()
+    domains = [line for line in lines if not line.startswith("#")]
+    assert len(domains) == 100_000
+    assert domains[0] == "google.com"
+    assert all(line.strip() == line and line for line in lines), "blank or padded line"
+    assert len(set(domains)) == len(domains), "duplicate domain"
+    assert all("," not in d and " " not in d and "." in d and d == d.lower() for d in domains)
+    assert 1_000_000 < path.stat().st_size < 3_000_000
+    assert dga.parse_domain_lines("\n".join(lines), 100_000) == frozenset(domains)
+
+
+def test_make_tranco_list_writes_top_n_in_rank_order(tmp_path):
+    import runpy
+
+    mod = runpy.run_path(str(REPO_ROOT / "models" / "make_tranco_list.py"), run_name="mk")
+    src = tmp_path / "XYZ99.csv"
+    src.write_text("1,google.com\n2,Cloudflare.com.\n3,google.com\n\n4,a.org\n5,b.org\n",
+                   encoding="utf-8")
+    out = tmp_path / "out.txt"
+    assert mod["make_list"](src, out, 3) == ["google.com", "cloudflare.com", "a.org"]
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("#") and "XYZ99" in lines[0] and "tranco-list.eu" in lines[0]
+    assert lines[1:] == ["google.com", "cloudflare.com", "a.org"]
+    assert dga.parse_domain_lines(out.read_text(encoding="utf-8")) == frozenset(lines[1:])
 
 
 def test_missing_model_logs_and_returns_nothing(cfg, tmp_path, tranco_file, allowlist_file, caplog):

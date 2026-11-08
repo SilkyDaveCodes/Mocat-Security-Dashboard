@@ -86,10 +86,16 @@ Test-Path models\dga.joblib, models\flow.joblib   # both True
 
 - `installer/homesoc.spec` builds two executables in one folder: `HomeSOC-Agent.exe` (manifest
   `uac_admin`, elevated) and `HomeSOC.exe` (the app, normal user). It bundles `config.yaml`,
-  `data/allowlist.txt`, `data/test_intel.txt`, `data/domain_allowlist.txt`, `models/dga.joblib`,
-  `models/flow.joblib` and `app/ui/`. It never bundles `lab/`, `tests/`, the training scripts
-  `models/train_*.py` or any DGA generator source (the baderj generators are GPL-2.0 and used
-  for training only, CLAUDE.md §7, §9). `tests/test_installer.py` checks this.
+  `data/allowlist.txt`, `data/test_intel.txt`, `data/domain_allowlist.txt`,
+  `data/tranco_top100k.txt`, `models/dga.joblib`, `models/flow.joblib` and `app/ui/`. It never
+  bundles `lab/`, `tests/`, the training scripts `models/train_*.py`, `models/make_tranco_list.py`
+  or any DGA generator source (the baderj generators are GPL-2.0 and used for training only,
+  CLAUDE.md §7, §9). `tests/test_installer.py` checks this.
+- `data/tranco_top100k.txt` (the DGA detector's popular-domain skip-list when there is no
+  downloaded Tranco cache, e.g. a fresh install) is the top 100,000 of the Tranco list from
+  [tranco-list.eu](https://tranco-list.eu/) (list ID `Q2VV4`, published for research/free use).
+  Regenerate it from the cache that `models\train_dga.py` fills:
+  `.venv\Scripts\python models\make_tranco_list.py`, then commit the file.
 - `installer/homesoc.iss` (Inno Setup 6) installs into `C:\Program Files\HomeSOC`, registers a
   scheduled task `HomeSOC Agent` that runs the agent as SYSTEM with highest privileges at
   startup (and starts it now), and adds the app to the Start menu and the all-users Startup

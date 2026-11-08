@@ -138,4 +138,7 @@ paths:
   # Cached Tranco list: a file ("rank,domain" or one domain per line), or a directory such as
   # the tranco package cache that train_dga.py writes (newest *.csv is used). Never downloaded live.
   tranco_cache: data/cache/tranco
+  # Committed + bundled Tranco top 100k (one domain per line), used when there is no cache
+  # (a fresh install). Regenerate with models/make_tranco_list.py.
+  tranco_bundled: data/tranco_top100k.txt
   domain_allowlist: data/domain_allowlist.txt  # domains the DGA detector never scores

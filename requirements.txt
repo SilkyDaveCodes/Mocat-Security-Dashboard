@@ -7,6 +7,7 @@ joblib
 fastapi
 uvicorn
 httpx         # FastAPI TestClient (tests)
+certifi       # CA bundle for the intel blocklist download (agent/detectors/intel.py)
 pywebview
 pystray
 pillow

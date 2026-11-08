@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import io
+import ssl
 import threading
 import urllib.error
 import urllib.request
@@ -360,7 +361,8 @@ def test_download_feed_uses_url_and_timeout(monkeypatch: pytest.MonkeyPatch) -> 
         def __exit__(self, *exc: object) -> None:
             self.close()
 
-    def fake_urlopen(request: urllib.request.Request, timeout: float) -> FakeResponse:
+    def fake_urlopen(request: urllib.request.Request, timeout: float,
+                     context: Any = None) -> FakeResponse:
         seen["url"] = request.full_url
         seen["timeout"] = timeout
         return FakeResponse(b"# header\n192.0.2.10\n")
@@ -374,12 +376,120 @@ def test_download_feed_uses_url_and_timeout(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_download_feed_propagates_http_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    def failing_urlopen(request: urllib.request.Request, timeout: float) -> Any:
+    def failing_urlopen(request: urllib.request.Request, timeout: float,
+                        context: Any = None) -> Any:
         raise urllib.error.HTTPError(FEED_URL, 404, "Not Found", {}, io.BytesIO())  # type: ignore[arg-type]
 
     monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
     with pytest.raises(urllib.error.HTTPError):
         _REAL_DOWNLOAD_FEED(FEED_URL, 1.0)
+
+
+# --- TLS: verify against certifi's CA bundle (fresh Windows root store, ticket #63 VM) --------
+
+
+def _capture_context(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Patch urlopen to record the ``context`` it gets and return an empty feed."""
+    seen: dict[str, Any] = {}
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self.close()
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float,
+                     context: Any = None) -> FakeResponse:
+        seen["context"] = context
+        return FakeResponse(b"192.0.2.10\n")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return seen
+
+
+def _spy_create_default_context(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    real = ssl.create_default_context
+
+    def spy(*args: Any, **kwargs: Any) -> ssl.SSLContext:
+        calls.append(dict(kwargs))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ssl, "create_default_context", spy)
+    return calls
+
+
+def test_download_verifies_tls_with_certifi_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
+    certifi = pytest.importorskip("certifi")
+    calls = _spy_create_default_context(monkeypatch)
+    seen = _capture_context(monkeypatch)
+
+    assert _REAL_DOWNLOAD_FEED(FEED_URL, 1.0) == "192.0.2.10\n"
+
+    ctx = seen["context"]
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+    assert calls == [{"cafile": certifi.where()}]
+    assert ctx.cert_store_stats()["x509_ca"] > 0  # certifi's roots really loaded
+
+
+def test_download_falls_back_to_default_context_without_certifi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_certifi(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "certifi":
+            raise ImportError("certifi not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_certifi)
+    calls = _spy_create_default_context(monkeypatch)
+    seen = _capture_context(monkeypatch)
+
+    _REAL_DOWNLOAD_FEED(FEED_URL, 1.0)
+
+    assert calls == [{}]  # plain create_default_context(): system roots, still verifying
+    ctx = seen["context"]
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+
+
+def test_unreadable_certifi_bundle_falls_back_to_default_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    certifi = pytest.importorskip("certifi")
+    monkeypatch.setattr(certifi, "where", lambda: str(tmp_path / "missing.pem"))
+    calls = _spy_create_default_context(monkeypatch)
+
+    ctx = intel.tls_context()
+
+    assert calls == [{"cafile": str(tmp_path / "missing.pem")}, {}]
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is True
+
+
+def test_ssl_verify_failure_is_logged_and_never_raises(
+    cfg: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def cert_failure(request: urllib.request.Request, timeout: float, context: Any = None) -> Any:
+        assert context is not None and context.verify_mode == ssl.CERT_REQUIRED
+        raise urllib.error.URLError(ssl.SSLCertVerificationError(
+            1, "[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", cert_failure)
+    # The real download_feed (the autouse guard replaced the module attribute).
+    monkeypatch.setattr(intel, "download_feed", _REAL_DOWNLOAD_FEED)
+    with caplog.at_level("WARNING", logger="agent.detectors.intel"):
+        detector = IntelDetector(cfg, cache_dir=tmp_path / "cache",
+                                 test_intel_path=REAL_TEST_INTEL, clock=FakeClock(), spawn=run_now)
+        detector.refresh()
+    assert "CERTIFICATE_VERIFY_FAILED" in caplog.text
+    assert detector.feed_ips == frozenset()
+    assert [s.target for s in detector.process(outbound_flow(LAB_C2))] == [LAB_C2]
 
 
 # --- AC5: no re-download within the refresh interval (fake clock) ----------------------------

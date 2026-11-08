@@ -6,11 +6,12 @@
 #   HomeSOC.exe        the app (window + tray + toasts); runs as the normal user
 # installer\homesoc.iss then packs dist\HomeSOC\ into HomeSOC-Setup.exe.
 #
-# Bundled: config.yaml, data\allowlist.txt (+ the two other data lists the agent reads),
+# Bundled: config.yaml, data\allowlist.txt (+ the three other data lists the agent reads:
+# test_intel, domain_allowlist, tranco_top100k),
 # models\dga.joblib, models\flow.joblib, app\ui\. At runtime the agent copies them into the
 # writable data root %PROGRAMDATA%\HomeSOC (agent/config.py: seed_data_root).
 # NEVER bundled (§7, §9): lab\ (fake malware, lab C2, traffic generators), the training
-# scripts models\train_*.py, any DGA generator source (baderj, GPL-2.0, training only), tests\.
+# scripts models\train_*.py (and models\make_tranco_list.py), any DGA generator source (baderj, GPL-2.0, training only), tests\.
 # tests/test_installer.py parses this file and checks both lists.
 
 from pathlib import Path
@@ -26,6 +27,7 @@ AGENT_DATAS = [
     (str(ROOT / "data" / "allowlist.txt"), "data"),
     (str(ROOT / "data" / "test_intel.txt"), "data"),
     (str(ROOT / "data" / "domain_allowlist.txt"), "data"),
+    (str(ROOT / "data" / "tranco_top100k.txt"), "data"),  # DGA skip-list when no Tranco cache
     (str(ROOT / "models" / "dga.joblib"), "models"),
     (str(ROOT / "models" / "flow.joblib"), "models"),
 ]
@@ -51,6 +53,9 @@ AGENT_HIDDEN = (
     + collect_submodules("uvicorn")
     # the joblib models unpickle scikit-learn estimators that nothing imports statically
     + collect_submodules("sklearn", filter=lambda name: ".tests" not in name)
+    # intel.py verifies the feed download against certifi's CA bundle (a fresh Windows root
+    # store lacks some roots); PyInstaller's hook-certifi then bundles cacert.pem
+    + ["certifi"]
 )
 APP_HIDDEN = ["pystray._win32"]  # pystray picks its backend at runtime
 

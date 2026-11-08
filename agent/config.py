@@ -36,6 +36,7 @@ SEED_IF_MISSING: tuple[str, ...] = (
     "data/allowlist.txt",
     "data/test_intel.txt",
     "data/domain_allowlist.txt",
+    "data/tranco_top100k.txt",  # DGA skip-list fallback when there is no Tranco cache
 )
 # Seeded when missing or different, so a reinstall with retrained models takes effect.
 SEED_REFRESH: tuple[str, ...] = ("models/dga.joblib", "models/flow.joblib")
