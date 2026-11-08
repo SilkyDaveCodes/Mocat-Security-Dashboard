@@ -635,13 +635,13 @@ sudo dnsmasq -C lab/dnsmasq.conf    # answers all DNS lookups inside the lab
 
 ## 11. Milestones
 
-- [ ] **H1** Event schema agreed; skeleton repo; `config.yaml`
-- [ ] **H10** `capture.py` prints FlowEvents with process names on the Windows VM
-- [ ] **H10** `dga.joblib` trained; confusion matrix saved
-- [ ] **H15** intel + beacon detectors pass unit tests
-- [ ] **H16** **First end-to-end:** fake malware → alert → quarantine → Undo (ugly is fine)
-- [ ] **H22** App window + tray + toasts wired to the WebSocket; FP test (1 h of normal use) done
-- [ ] **H30** Feature freeze. Installer builds.
+- [x] **H1** Event schema agreed; skeleton repo; `config.yaml`
+- [x] **H10** `capture.py` prints FlowEvents with process names on the Windows VM
+- [x] **H10** `dga.joblib` trained; confusion matrix saved
+- [x] **H15** intel + beacon detectors pass unit tests
+- [x] **H16** **First end-to-end:** fake malware → alert → quarantine → Undo (ugly is fine)
+- [x] **H22** App window + tray + toasts wired to the WebSocket; FP test (1 h of normal use) done
+- [x] **H30** Feature freeze. Installer builds.
 - [ ] **H36** Demo
 
 ## 12. Demo checklist
