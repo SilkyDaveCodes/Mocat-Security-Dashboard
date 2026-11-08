@@ -1,6 +1,7 @@
 """HomeSOC tray shield (CLAUDE.md §6.7).
 
-A ``pystray`` icon whose shield is
+A ``pystray`` icon (the MoCat logo ``app/ui/logo.png`` with a status dot in the corner; a plain
+shield if the logo can't be loaded, :func:`tray_image`) whose colour is
 
 * **green**  no active alert,
 * **yellow** only active ``low`` / ``medium`` alerts,
@@ -29,10 +30,11 @@ import logging
 import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from agent import config as config_module
-from app.main import API_BASE_URL, validate_api_url
+from app.main import API_BASE_URL, UI_DIR, validate_api_url
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,11 @@ TITLES: dict[str, str] = {
     "red": "MoCat HomeSOC: high-severity alert",
 }
 OFFLINE_SUFFIX = " (agent offline)"
+# app/ui/logo.png: next to the UI in source and frozen alike (the spec bundles app/ui as app/ui,
+# and app.main.UI_DIR follows app/main.py into the bundle).
+LOGO_PATH = UI_DIR / "logo.png"
+DOT_FRACTION = 0.42  # status dot diameter / icon size
+DOT_RING_RGBA = (255, 255, 255, 255)
 
 
 # --- pure colour logic ------------------------------------------------------------------------
@@ -257,6 +264,35 @@ def shield_image(colour: TrayColour, image_module: Any | None = None,
     return img
 
 
+def logo_image(colour: TrayColour, logo_path: Path | None = None,
+               image_module: Any | None = None, draw_module: Any | None = None) -> Any:
+    """The MoCat logo with a ``colour`` status dot (white ring) in the bottom-right corner.
+
+    Raises ``OSError`` / ``ValueError`` if the logo can't be read (see :func:`tray_image`).
+    """
+    if image_module is None or draw_module is None:
+        from PIL import Image as image_module  # lazy: only for the real icon
+        from PIL import ImageDraw as draw_module
+    s = ICON_SIZE
+    with image_module.open(logo_path or LOGO_PATH) as logo:
+        img = logo.convert("RGBA").resize((s, s), image_module.Resampling.LANCZOS)
+    d = round(s * DOT_FRACTION)
+    box = (s - d - 1, s - d - 1, s - 1, s - 1)
+    draw_module.Draw(img).ellipse(box, fill=(*COLOURS_RGB[colour], 255),
+                                  outline=DOT_RING_RGBA, width=max(1, s // 21))
+    return img
+
+
+def tray_image(colour: TrayColour, logo_path: Path | None = None) -> Any:
+    """:func:`logo_image`, or the plain :func:`shield_image` if the logo can't be loaded."""
+    try:
+        return logo_image(colour, logo_path)
+    except (OSError, ValueError) as exc:
+        logger.warning("Tray logo %s unusable (%s); using the plain shield",
+                       logo_path or LOGO_PATH, exc)
+        return shield_image(colour)
+
+
 def _to_pystray(entries: list[MenuEntry], pystray: Any) -> Any:
     items = []
     for e in entries:
@@ -279,7 +315,7 @@ def _no_args(fn: Callable[[], None] | None) -> Callable[[Any, Any], None]:
 
 
 def build_icon(tray: Tray, pystray: Any | None = None,
-               image_fn: Callable[[TrayColour], Any] = shield_image) -> Any:
+               image_fn: Callable[[TrayColour], Any] = tray_image) -> Any:
     """Build the pystray icon; it follows the tray's colour / title on every refresh."""
     if pystray is None:
         import pystray  # lazy: Windows runtime only
@@ -302,7 +338,7 @@ def build_icon(tray: Tray, pystray: Any | None = None,
 
 def start_tray(window: Any, cfg: Mapping[str, Any] | None = None,
                http: HttpClient | None = None, pystray: Any | None = None,
-               image_fn: Callable[[TrayColour], Any] = shield_image) -> Any:
+               image_fn: Callable[[TrayColour], Any] = tray_image) -> Any:
     """``app.main.run(on_started=...)`` hook: show the tray for ``window`` and start polling."""
     refresh_s, timeout_s = tray_settings(cfg if cfg is not None else config_module.load())
     if http is None:

@@ -63,17 +63,26 @@ Live runbook for the two lab VMs (portscan -> T1046 + IP block, bruteforce -> T1
 
 ## Building the installer (HomeSOC-Setup.exe)
 
-On the Windows build VM, from the repo root, with the models already trained (§8):
+On the Windows build VM, from the repo root. The spec bundles the models **from `models\`**, so
+they must be there first: train them (§8) or copy the shared `dga.joblib` / `flow.joblib` in
+(they are not in git). Install Inno Setup 6 once.
 
 ```powershell
 .venv\Scripts\pip install pyinstaller
+# models\dga.joblib and models\flow.joblib must exist (train, or copy them in):
 .venv\Scripts\python models\train_dga.py ...      # -> models\dga.joblib
 .venv\Scripts\python models\train_flow.py         # -> models\flow.joblib
+Test-Path models\dga.joblib, models\flow.joblib   # both True
 .venv\Scripts\pyinstaller --noconfirm installer\homesoc.spec
 #   -> dist\HomeSOC\  (HomeSOC-Agent.exe, HomeSOC.exe, _internal\)
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\homesoc.iss
 #   -> dist\HomeSOC-Setup.exe
 ```
+
+- **Icon:** both EXEs and the setup use `installer\mocat.ico` (committed), made from
+  `app\ui\logo.png`. After changing the logo: `.venv\Scripts\python installer\make_icon.py`.
+  The installer shows the name "MoCat HomeSOC"; folders, exe names, the task and the firewall
+  group stay `HomeSOC`.
 
 - `installer/homesoc.spec` builds two executables in one folder: `HomeSOC-Agent.exe` (manifest
   `uac_admin`, elevated) and `HomeSOC.exe` (the app, normal user). It bundles `config.yaml`,
@@ -118,8 +127,8 @@ machine. Neither the installer nor HomeSOC itself ever changes Defender settings
 ### Manual check on a fresh VM (demo checklist step 1)
 
 1. Restore a fresh Windows VM snapshot with Wireshark (Npcap) installed.
-2. Run `HomeSOC-Setup.exe`, accept the UAC prompt, leave "Open HomeSOC" ticked, finish.
-3. Within a few seconds the tray shows the green HomeSOC shield and the window opens; the Home
+2. Run `HomeSOC-Setup.exe`, accept the UAC prompt, leave "Open MoCat HomeSOC" ticked, finish.
+3. Within a few seconds the tray shows the MoCat logo with a green dot and the window opens; the Home
    screen shows the agent connected. `Get-ScheduledTask "HomeSOC Agent"` shows it Running.
 4. Uninstall (Settings > Apps): `Get-NetFirewallRule -Group 'HomeSOC'` then finds nothing and
    every other firewall rule is unchanged.

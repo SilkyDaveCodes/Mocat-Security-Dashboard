@@ -18,6 +18,8 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = Path(SPECPATH).resolve().parent  # noqa: F821  (SPECPATH is set by PyInstaller)
+# MoCat HomeSOC icon for both EXEs (Explorer, taskbar); regenerate with installer\make_icon.py.
+ICON = str(ROOT / "installer" / "mocat.ico")
 
 AGENT_DATAS = [
     (str(ROOT / "config.yaml"), "."),
@@ -68,7 +70,8 @@ agent_exe = EXE(  # noqa: F821
     [],
     exclude_binaries=True,
     name="HomeSOC-Agent",
-    console=False,
+    icon=ICON,
+    console=False,  # runs headless from the scheduled task; logs go to agent.log
     uac_admin=True,
     upx=False,
 )
@@ -89,7 +92,8 @@ app_exe = EXE(  # noqa: F821
     [],
     exclude_binaries=True,
     name="HomeSOC",
-    console=False,
+    icon=ICON,
+    console=False,  # GUI app (window + tray): no console window
     uac_admin=False,
     upx=False,
 )

@@ -1,4 +1,4 @@
-"""Tests for the tray shield (app/tray.py, CLAUDE.md §6.7, ticket #42).
+"""Tests for the tray shield (app/tray.py, CLAUDE.md §6.7, ticket #42; MoCat logo icon: #63).
 
 * :func:`app.tray.tray_state` colours: green / yellow / red, and "active" = not every action of
   the alert undone.
@@ -438,3 +438,65 @@ def test_importing_the_tray_does_not_import_pystray_or_pil() -> None:
             "sys.exit(1 if bad else 0)")
     repo = Path(__file__).resolve().parent.parent
     assert subprocess.run([sys.executable, "-c", code], cwd=repo).returncode == 0
+
+
+# --- MoCat logo icon (ticket #63) ---------------------------------------------------------------
+
+
+def _pil() -> Any:
+    return pytest.importorskip("PIL.Image", reason="Pillow is needed to build the real tray image")
+
+
+def _dot_centre() -> tuple[int, int]:
+    s, d = tray_mod.ICON_SIZE, round(tray_mod.ICON_SIZE * tray_mod.DOT_FRACTION)
+    c = s - 1 - d // 2
+    return c, c
+
+
+@pytest.mark.parametrize("colour", ["green", "yellow", "red"])
+def test_tray_image_is_the_logo_with_a_status_dot_of_the_state_colour(colour: str) -> None:
+    image = _pil()
+    img = tray_mod.tray_image(colour)  # type: ignore[arg-type]
+    assert img.size == (tray_mod.ICON_SIZE, tray_mod.ICON_SIZE) and img.mode == "RGBA"
+    assert img.getpixel(_dot_centre()) == (*tray_mod.COLOURS_RGB[colour], 255)
+    # Outside the dot it is the logo itself (not the plain shield): same pixels as logo.png.
+    with image.open(tray_mod.LOGO_PATH) as logo:
+        ref = logo.convert("RGBA").resize(img.size, image.Resampling.LANCZOS)
+    s = tray_mod.ICON_SIZE
+    for xy in [(0, 0), (s // 2, s // 3), (s // 3, s // 2), (s // 2, s // 8)]:
+        assert img.getpixel(xy) == ref.getpixel(xy), xy
+    centre = (s // 2, s // 3)
+    assert img.getpixel(centre) != tray_mod.shield_image(colour).getpixel(centre)
+
+
+def test_tray_images_differ_only_by_the_dot_colour() -> None:
+    _pil()
+    imgs = {c: tray_mod.tray_image(c) for c in ("green", "yellow", "red")}  # type: ignore[misc]
+    assert len({im.getpixel(_dot_centre()) for im in imgs.values()}) == 3
+    assert imgs["green"].getpixel((0, 0)) == imgs["red"].getpixel((0, 0))
+
+
+def test_tray_logo_path_is_the_bundled_ui_folder() -> None:
+    # app/ui is bundled as app/ui (homesoc.spec) and app.main.UI_DIR follows app/main.py there.
+    assert tray_mod.LOGO_PATH == app_main.UI_DIR / "logo.png"
+    assert tray_mod.LOGO_PATH.is_file()
+
+
+@pytest.mark.parametrize("bad", ["missing.png", "not_an_image.png"])
+def test_tray_image_falls_back_to_the_plain_shield(bad: str, tmp_path: Path,
+                                                    caplog: pytest.LogCaptureFixture) -> None:
+    _pil()
+    path = tmp_path / bad
+    if bad == "not_an_image.png":
+        path.write_bytes(b"not a png")
+    img = tray_mod.tray_image("red", path)
+    plain = tray_mod.shield_image("red")
+    assert img.tobytes() == plain.tobytes()
+    assert "plain shield" in caplog.text
+
+
+def test_build_icon_uses_the_logo_image_by_default() -> None:
+    _pil()
+    http = FakeHttp()
+    icon = build_icon(Tray(AgentApi(http)), FAKE_PYSTRAY)
+    assert icon.icon.getpixel(_dot_centre()) == (*tray_mod.COLOURS_RGB["green"], 255)

@@ -16,6 +16,9 @@
 ; tests/test_installer.py parses this file and checks that.
 
 #define AppName "HomeSOC"
+; Shown to the user (wizard, Start menu, Startup, Apps & features). Internal names (folders,
+; exe names, the scheduled task, the firewall group) stay HomeSOC on purpose (CLAUDE.md §6.7).
+#define AppDisplayName "MoCat HomeSOC"
 #define AppVersion "0.1.0"
 #define AgentExe "HomeSOC-Agent.exe"
 #define AppExe "HomeSOC.exe"
@@ -23,11 +26,11 @@
 
 [Setup]
 AppId={{B79FCC82-AF9F-4E78-B414-33E688145F75}
-AppName={#AppName}
+AppName={#AppDisplayName}
 AppVersion={#AppVersion}
 AppPublisher=HomeSOC hackathon team
 DefaultDirName={autopf}\{#AppName}
-DefaultGroupName={#AppName}
+DefaultGroupName={#AppDisplayName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
@@ -38,21 +41,28 @@ OutputBaseFilename=HomeSOC-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; installer\mocat.ico (paths are relative to this file); regenerate with installer\make_icon.py
+SetupIconFile=mocat.ico
 UninstallDisplayIcon={app}\{#AppExe}
-UninstallDisplayName={#AppName}
+UninstallDisplayName={#AppDisplayName}
 
 [Files]
 Source: "..\dist\HomeSOC\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+; Shortcuts of an install from before the MoCat rename (else the app would start twice at logon).
+Type: files; Name: "{autoprograms}\HomeSOC.lnk"
+Type: files; Name: "{commonstartup}\HomeSOC.lnk"
+
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
-Name: "{commonstartup}\{#AppName}"; Filename: "{app}\{#AppExe}"
+Name: "{autoprograms}\{#AppDisplayName}"; Filename: "{app}\{#AppExe}"
+Name: "{commonstartup}\{#AppDisplayName}"; Filename: "{app}\{#AppExe}"
 
 [Run]
 ; Agent: register the elevated startup task (no 72 h time limit, restart on failure) and start it.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$a = New-ScheduledTaskAction -Execute '{app}\{#AgentExe}'; $t = New-ScheduledTaskTrigger -AtStartup; $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); Register-ScheduledTask -TaskName '{#AgentTask}' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null; Start-ScheduledTask -TaskName '{#AgentTask}'"""; Flags: runhidden waituntilterminated; StatusMsg: "Starting the HomeSOC agent..."
 ; App: as the user who ran setup, not elevated.
-Filename: "{app}\{#AppExe}"; Description: "Open HomeSOC"; Flags: nowait postinstall runasoriginaluser skipifsilent
+Filename: "{app}\{#AppExe}"; Description: "Open {#AppDisplayName}"; Flags: nowait postinstall runasoriginaluser skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Unregister-ScheduledTask -TaskName '{#AgentTask}' -Confirm:$false"""; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAgentTask"

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import runpy
+import struct
 import sys
 import types
 from dataclasses import dataclass, field
@@ -261,6 +262,67 @@ def test_entry_script_gives_a_windowed_exe_stdio(monkeypatch: pytest.MonkeyPatch
         sys.stderr.close()
 
 
+# --- the MoCat icon (ticket #63) -------------------------------------------------------------
+
+ICO = REPO_ROOT / "installer" / "mocat.ico"
+REQUIRED_ICO_SIZES = {16, 32, 48, 256}
+
+
+def ico_sizes(data: bytes) -> list[int]:
+    """Square sizes in an .ico (ICONDIR + ICONDIRENTRYs; a 0 width byte means 256)."""
+    reserved, kind, count = struct.unpack_from("<HHH", data, 0)
+    if reserved != 0 or kind != 1 or count == 0:
+        raise ValueError("not an .ico file")
+    sizes = []
+    for i in range(count):
+        width, height = struct.unpack_from("<BB", data, 6 + 16 * i)
+        size, offset = struct.unpack_from("<II", data, 6 + 16 * i + 8)
+        if width != height or offset + size > len(data):
+            raise ValueError(f"bad icon entry {i}")
+        sizes.append(width or 256)
+    return sizes
+
+
+def test_mocat_ico_is_a_valid_multi_size_icon() -> None:
+    sizes = ico_sizes(ICO.read_bytes())
+    assert REQUIRED_ICO_SIZES <= set(sizes), sizes
+    assert len(sizes) == len(set(sizes))
+
+
+def test_ico_check_rejects_a_png() -> None:
+    with pytest.raises(ValueError):
+        ico_sizes((REPO_ROOT / "app" / "ui" / "logo.png").read_bytes())
+
+
+def test_mocat_ico_is_not_gitignored() -> None:
+    import shutil
+    import subprocess
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    res = subprocess.run(["git", "check-ignore", "-q", str(ICO)], cwd=REPO_ROOT)
+    assert res.returncode == 1, "installer/mocat.ico must be committed (it is gitignored)"
+
+
+def test_make_icon_regenerates_every_size_from_the_logo(tmp_path: Path) -> None:
+    pytest.importorskip("PIL", reason="Pillow is needed to regenerate the icon")
+    make_icon = runpy.run_path(str(REPO_ROOT / "installer" / "make_icon.py"), run_name="mk")
+    out = make_icon["make_icon"](dst=tmp_path / "out.ico")
+    assert sorted(ico_sizes(out.read_bytes())) == list(make_icon["SIZES"])
+    assert REQUIRED_ICO_SIZES <= set(make_icon["SIZES"])
+    from PIL import Image
+    with Image.open(out) as img:  # largest frame; the logo's transparent corner survives
+        assert img.size == (256, 256)
+        assert img.convert("RGBA").getpixel((0, 0))[3] == 0
+
+
+def test_spec_gives_both_exes_the_mocat_icon(spec_run: SpecRun) -> None:
+    for name in ("HomeSOC-Agent", "HomeSOC"):
+        exe = _by_name(spec_run, name)
+        assert _rel(exe["icon"]) == "installer/mocat.ico", exe
+        assert exe["console"] is False  # windowed: the app is a GUI, the agent a background task
+    assert ICO.is_file()
+
+
 # --- the .iss -------------------------------------------------------------------------------
 
 
@@ -404,6 +466,41 @@ def test_installer_installs_the_agent_elevated_and_the_app_as_the_user() -> None
     assert "postinstall" in app["Flags"].split()
 
 
+def _setup_section(text: str | None = None) -> dict[str, str]:
+    sections, _ = parse_iss(ISS.read_text(encoding="utf-8") if text is None else text)
+    return dict(line.split("=", 1) for line in sections["Setup"])
+
+
+def test_installer_shows_the_mocat_name_and_icon() -> None:
+    setup = _setup_section()
+    assert setup["AppName"] == "MoCat HomeSOC"
+    assert setup["UninstallDisplayName"] == "MoCat HomeSOC"
+    assert setup["DefaultGroupName"] == "MoCat HomeSOC"
+    # SetupIconFile is relative to the .iss (like OutputDir=..\dist)
+    assert (ISS.parent / setup["SetupIconFile"]).resolve() == ICO.resolve()
+    assert setup["UninstallDisplayIcon"] == "{app}\\HomeSOC.exe"
+    shortcuts = {e["Name"]: e["Filename"] for e in entries("Icons")}
+    assert shortcuts == {"{autoprograms}\\MoCat HomeSOC": "{app}\\HomeSOC.exe",
+                         "{commonstartup}\\MoCat HomeSOC": "{app}\\HomeSOC.exe"}
+    # the pre-rename shortcuts are removed on upgrade (else the app starts twice at logon)
+    removed = {e["Name"] for e in entries("InstallDelete")}
+    assert {"{autoprograms}\\HomeSOC.lnk", "{commonstartup}\\HomeSOC.lnk"} <= removed
+
+
+def test_installer_keeps_the_internal_homesoc_names() -> None:
+    # CLAUDE.md §6.7: only the display name changed; folders, exes, task, group, AppId did not.
+    setup = _setup_section()
+    assert setup["AppId"] == "{{B79FCC82-AF9F-4E78-B414-33E688145F75}"
+    assert setup["DefaultDirName"] == "{autopf}\\HomeSOC"
+    assert setup["OutputBaseFilename"] == "HomeSOC-Setup"
+    _, defines = parse_iss(ISS.read_text(encoding="utf-8"))
+    assert defines["AgentTask"] == "HomeSOC Agent"
+    assert defines["AgentExe"] == "HomeSOC-Agent.exe" and defines["AppExe"] == "HomeSOC.exe"
+    text = ISS.read_text(encoding="utf-8")
+    assert "-TaskName 'HomeSOC Agent'" in parse_iss(text)[0]["Run"][0]
+    assert uninstall_problems(text) == []
+
+
 def test_iss_parser_unquotes_inno_strings() -> None:
     entry = _split_entry('Filename: "a.exe"; Parameters: "-Command ""x; y"""; Flags: runhidden')
     assert entry == {"Filename": "a.exe", "Parameters": '-Command "x; y"', "Flags": "runhidden"}
@@ -435,6 +532,14 @@ def test_readme_documents_the_build() -> None:
     assert "ISCC.exe\" installer\\homesoc.iss" in build
     assert "HomeSOC-Setup.exe" in build
     assert "%PROGRAMDATA%\\HomeSOC" in build  # where the writable data goes
+
+
+def test_readme_build_steps_match_the_spec_and_iss() -> None:
+    build = _readme_section("installer")
+    # the spec bundles the models from models\, so they must be there before pyinstaller runs
+    assert build.index("models\\flow.joblib") < build.index("pyinstaller --noconfirm")
+    assert build.index("pyinstaller --noconfirm") < build.index("ISCC.exe")
+    assert "mocat.ico" in build and "make_icon.py" in build
 
 
 def test_readme_says_the_defender_exclusion_is_test_vm_only() -> None:
